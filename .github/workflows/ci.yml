@@ -1,0 +1,63 @@
+name: Quality gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: finagent
+          POSTGRES_PASSWORD: finagent
+          POSTGRES_DB: finagent
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      FINAGENT_DATABASE_URL: postgresql+psycopg://finagent:finagent@localhost:5432/finagent
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev,ocr]"
+
+      - name: Check formatting with ruff
+        run: ruff format --check .
+
+      - name: Lint with ruff
+        run: ruff check .
+
+      - name: Type check with mypy
+        run: mypy src
+
+      - name: Run tests with pytest
+        run: pytest
