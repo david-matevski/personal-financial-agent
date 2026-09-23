@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from finagent.domain.models import ParsedStatement
 from finagent.ingest.extract.base import StatementExtractor
+from finagent.ingest.extract.schema import StatementExtraction
 from finagent.ingest.loaders import load_document
 from finagent.ingest.normalize import normalize
 from finagent.ingest.validate import ValidationStatus, validate
@@ -26,6 +27,13 @@ class ExtractionResult:
     status: ValidationStatus
     problems: tuple[str, ...]
     attempts: int
+    extraction: StatementExtraction
+    """The raw (last-attempt) model transcription, kept for persistence/audit.
+
+    Callers that need fields ``ParsedStatement`` doesn't carry (e.g.
+    ``account_last4``, printed totals as strings) read them from here rather
+    than from the normalized statement.
+    """
 
 
 def extract_statement(
@@ -58,6 +66,7 @@ def extract_statement(
         status=result.status,
         problems=result.problems,
         attempts=attempts,
+        extraction=extraction,
     )
 
 
