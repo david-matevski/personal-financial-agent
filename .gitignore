@@ -2,14 +2,39 @@
 data/
 statements/
 uploads/
+exports/
+# Statements & exports
 *.pdf
 *.xls
 *.xlsx
 *.csv
 *.ofx
 *.qfx
+*.qbo
+# Scanned / photographed statements (OCR input)
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.heic
+*.webp
+# Database dumps & local DBs may contain real transactions
+*.dump
+*.backup
+*.bak
+*.sqlite
+*.sqlite3
+*.db
+# Archives often bundle statements
+*.zip
+*.7z
 # Synthetic test fixtures are the only exception
 !tests/fixtures/**
+
+# --- Logs (may echo parsed data) ---
+*.log
+logs/
 
 # --- Secrets ---
 .env
