@@ -1,27 +1,24 @@
-"""Extraction backend contracts.
+"""Extraction backend contract.
 
-Text-layer PDF parsing (pdfplumber) is tried first; OCR is a fallback for
-pages with no usable text layer. Text extractors implement ``TextExtractor``
-so the rest of the pipeline is agnostic to which backend produced the text
-(AGENTS.md §3: "OCR backend is swappable behind a Protocol"). OCR is a
-distinct, narrower role (``PageOcr``): it's only ever invoked one sparse
-page at a time, never for a whole document.
+LLM access goes only through this Protocol (AGENTS.md §3): tests use fakes,
+and no test ever calls the real API. The Anthropic implementation lives in
+``finagent.ingest.extract.anthropic``.
 """
 
 from typing import Protocol
 
-
-class TextExtractor(Protocol):
-    """Extracts per-page text from a source document."""
-
-    def extract(self, pdf_bytes: bytes) -> list[str]:
-        """Return one string of extracted text per page, in page order."""
-        ...
+from finagent.ingest.document import SourceDocument
+from finagent.ingest.extract.schema import StatementExtraction
 
 
-class PageOcr(Protocol):
-    """OCRs a single page of a document, by index."""
+class StatementExtractor(Protocol):
+    """Reads a statement document and returns a structured transcription."""
 
-    def ocr_page(self, pdf_bytes: bytes, page_index: int) -> str:
-        """Return the OCR'd text of the page at ``page_index`` (0-based)."""
+    def extract(self, doc: SourceDocument, feedback: str | None = None) -> StatementExtraction:
+        """Extract a statement into a ``StatementExtraction``.
+
+        ``feedback`` carries a discrepancy description from a failed
+        validation of a previous attempt (see ``ingest.pipeline``), asking
+        the model to re-check and return a corrected, complete extraction.
+        """
         ...

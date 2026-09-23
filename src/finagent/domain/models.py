@@ -7,17 +7,15 @@ fees); negative amount = money in (payments, refunds, income).
 from datetime import date
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
 
-
-class Issuer(str, Enum):
-    """A supported statement-issuing institution."""
-
-    AMEX = "AMEX"
-    CIBC = "CIBC"
-    TD = "TD"
+# A free-form, normalized issuer name (AGENTS.md §3: "No per-issuer
+# parsers"). New issuers must work without new code, so this is not an
+# enum -- just a short canonical name the extraction model reports (e.g.
+# "TD", "AMEX", "CIBC", "RBC"), normalized to stripped uppercase.
+Issuer = Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, min_length=1)]
 
 
 class AccountType(str, Enum):
@@ -76,7 +74,10 @@ class ParsedStatement(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     issuer: Issuer
+    account_name: str
     account_label: str
+    account_type: AccountType
+    currency: str = "CAD"
     period_start: date | None = None
     period_end: date | None = None
     transactions: tuple[Transaction, ...] = ()

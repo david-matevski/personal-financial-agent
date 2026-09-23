@@ -2,8 +2,8 @@
 
 Dispatch is by content sniffing (magic bytes), with the filename extension
 used only as a hint when the bytes don't carry a recognizable signature
-(plain-text CSV has none). Parsers never see raw bytes or file formats --
-only the ``SourceDocument`` this module produces.
+(plain-text CSV has none). Extraction never sees raw bytes or file formats
+directly -- only the ``SourceDocument`` this module produces.
 """
 
 import csv
@@ -16,33 +16,43 @@ import xlrd
 
 from finagent.core.errors import ExtractionError, UnsupportedStatementError
 from finagent.ingest.document import DocumentKind, SourceDocument
-from finagent.ingest.extract.fallback import FallbackTextExtractor
-from finagent.ingest.extract.ocr import TesseractOcrExtractor
-from finagent.ingest.extract.pdf_text import PdfTextExtractor
 
 _PDF_MAGIC = b"%PDF"
 _OLE2_MAGIC = (
     b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # legacy .xls (and other MS Office binary formats)
 )
 _ZIP_MAGIC = b"PK\x03\x04"  # .xlsx (and other Office Open XML formats)
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_GIF_MAGIC_PREFIXES = (b"GIF87a", b"GIF89a")
+_RIFF_MAGIC = b"RIFF"
+_WEBP_MAGIC = b"WEBP"
 
 
 def load_document(filename: str, data: bytes) -> SourceDocument:
-    """Detect the statement format and extract it into a ``SourceDocument``.
+    """Detect the statement format and load it into a ``SourceDocument``.
 
     Raises ``UnsupportedStatementError`` if the bytes don't match any
     supported format, ``ExtractionError`` if the format is recognized but
-    extraction fails (corrupt file, unreadable workbook, OCR failure, ...).
+    loading fails (corrupt/unreadable workbook, malformed CSV, ...).
     """
     if not data:
         raise UnsupportedStatementError(f"{filename}: empty file")
 
     if data.startswith(_PDF_MAGIC):
-        return _load_pdf(filename, data)
+        return SourceDocument(
+            filename=filename, kind=DocumentKind.PDF, data=data, media_type="application/pdf"
+        )
     if data.startswith(_OLE2_MAGIC):
         return _load_xls(filename, data)
     if data.startswith(_ZIP_MAGIC):
         return _load_xlsx(filename, data)
+
+    image_media_type = _sniff_image_media_type(data)
+    if image_media_type is not None:
+        return SourceDocument(
+            filename=filename, kind=DocumentKind.IMAGE, data=data, media_type=image_media_type
+        )
 
     # No recognizable binary signature: fall back to CSV, using the
     # extension as a hint for the error message only.
@@ -56,15 +66,17 @@ def load_document(filename: str, data: bytes) -> SourceDocument:
     return _load_csv_text(filename, text)
 
 
-def _load_pdf(filename: str, data: bytes) -> SourceDocument:
-    extractor = FallbackTextExtractor(PdfTextExtractor(), TesseractOcrExtractor())
-    try:
-        pages = extractor.extract(data)
-    except ExtractionError:
-        raise
-    except Exception as exc:  # pragma: no cover - defensive; extractors wrap their own errors
-        raise ExtractionError(f"Failed to extract PDF {filename}: {exc}") from exc
-    return SourceDocument(filename=filename, kind=DocumentKind.TEXT, pages=tuple(pages))
+def _sniff_image_media_type(data: bytes) -> str | None:
+    """Return the media type for a recognized image signature, else None."""
+    if data.startswith(_PNG_MAGIC):
+        return "image/png"
+    if data.startswith(_JPEG_MAGIC):
+        return "image/jpeg"
+    if data.startswith(_GIF_MAGIC_PREFIXES):
+        return "image/gif"
+    if data.startswith(_RIFF_MAGIC) and data[8:12] == _WEBP_MAGIC:
+        return "image/webp"
+    return None
 
 
 def _load_xls(filename: str, data: bytes) -> SourceDocument:
@@ -108,11 +120,13 @@ def _load_csv_text(filename: str, text: str) -> SourceDocument:
         rows = tuple(tuple(cell.strip() for cell in row) for row in csv.reader(io.StringIO(text)))
     except csv.Error as exc:
         raise ExtractionError(f"Failed to parse CSV {filename}: {exc}") from exc
+    if not rows:
+        raise UnsupportedStatementError(f"{filename}: no rows found")
     return SourceDocument(filename=filename, kind=DocumentKind.TABLE, rows=rows)
 
 
 def _stringify_cell(value: object) -> str:
-    """Stringify an openpyxl cell value the way parsers expect to see it."""
+    """Stringify an openpyxl cell value the way extraction expects to see it."""
     if value is None:
         return ""
     if isinstance(value, str):
