@@ -13,7 +13,10 @@ def _upload(
     client.app.dependency_overrides[get_extractor] = lambda: extractor
     response = client.post("/statements", files={"file": (filename, filename.encode(), "text/csv")})
     assert response.status_code == 201, response.text
-    return response.json()
+    body = response.json()
+    # A reconciliation mismatch in the fixture would silently store no rows.
+    assert body["status"] == "VERIFIED", body
+    return body
 
 
 def test_transaction_amounts_are_serialized_as_strings(client: TestClient) -> None:
@@ -36,6 +39,7 @@ def test_transactions_filter_by_account_id(client: TestClient) -> None:
         {
             "issuer": "AMEX",
             "account_last4": "9999",
+            "closing_balance": "108.00",
             "transactions": [
                 {
                     "posted_date": "2026-01-06",
@@ -62,6 +66,7 @@ def test_transactions_filter_by_date_range(client: TestClient) -> None:
         client,
         "multi.csv",
         {
+            "closing_balance": "113.00",
             "transactions": [
                 {
                     "posted_date": "2026-01-05",
@@ -75,7 +80,7 @@ def test_transactions_filter_by_date_range(client: TestClient) -> None:
                     "amount": "8.00",
                     "direction": "OUT",
                 },
-            ]
+            ],
         },
     )
 
