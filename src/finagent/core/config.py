@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     extraction_model: str = "claude-opus-5-5"
     extraction_effort: str = "high"  # Set explicitly; Opus 5.5's API default is medium
 
+    # API auth: every endpoint but GET /health requires this as a bearer
+    # token (FINAGENT_API_TOKEN). None means auth is unconfigured, which
+    # fails closed -- see api/deps.require_auth.
+    api_token: SecretStr | None = None
+    max_upload_bytes: int = 20 * 1024 * 1024
+
 
 @lru_cache
 def get_settings() -> Settings:
