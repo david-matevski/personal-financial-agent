@@ -18,6 +18,7 @@ of the git-ignored ``statements/`` folder), only counts.
 
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from finagent.core.config import build_extractor, get_settings
@@ -61,7 +62,11 @@ def main() -> int:
 
 def _evaluate_one(statement_path: Path, expected_path: Path, extractor: StatementExtractor) -> None:
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
-    expected_keys = {(tx["posted_date"], tx["amount"]) for tx in expected.get("transactions", [])}
+    # Counters, not sets: identical same-day charges are legitimate and must
+    # each be extracted, so duplicates have to count individually.
+    expected_keys = Counter(
+        (tx["posted_date"], tx["amount"]) for tx in expected.get("transactions", [])
+    )
 
     try:
         data = statement_path.read_bytes()
@@ -70,17 +75,17 @@ def _evaluate_one(statement_path: Path, expected_path: Path, extractor: Statemen
         print(f"{statement_path.name}: ERROR ({type(exc).__name__})")
         return
 
-    actual_keys = {
+    actual_keys = Counter(
         (tx.posted_date.isoformat(), f"{tx.amount:.2f}") for tx in result.statement.transactions
-    }
+    )
     matches = expected_keys & actual_keys
     missing = expected_keys - actual_keys
     extra = actual_keys - expected_keys
 
     print(
         f"{statement_path.name}: status={result.status.value} attempts={result.attempts} "
-        f"extracted={len(result.statement.transactions)} expected={len(expected_keys)} "
-        f"matches={len(matches)} missing={len(missing)} extra={len(extra)}"
+        f"extracted={actual_keys.total()} expected={expected_keys.total()} "
+        f"matches={matches.total()} missing={missing.total()} extra={extra.total()}"
     )
 
 
