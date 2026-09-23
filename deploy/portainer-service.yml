@@ -9,7 +9,8 @@
 #   3. In the stack's "Environment variables" section, set:
 #        FINAGENT_DATABASE_URL, ANTHROPIC_API_KEY, FINAGENT_API_TOKEN,
 #        FINAGENT_EXTRACTION_MODEL, FINAGENT_EXTRACTION_EFFORT
-#   4. Click "Update the stack".
+#   4. Click "Update the stack" (turn off "Re-pull image": this service is
+#      built on the server from the repo, there is no image to pull).
 #
 # The database URL's host is `crestlink-postgres` (the Postgres service
 # already in this stack), e.g.:
@@ -31,8 +32,8 @@
 # Do NOT add a Cloudflare public hostname for this service yet.
 
   finagent-api:
-    build:
-      context: https://github.com/david-matevski/personal-financial-agent.git#main
+    # String form: Portainer's compose validator rejects the mapping form.
+    build: https://github.com/david-matevski/personal-financial-agent.git#main
     container_name: finagent-api
     restart: unless-stopped
     environment:
