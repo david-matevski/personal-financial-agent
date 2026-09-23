@@ -1,4 +1,4 @@
-"""Tests for finagent.domain.models.Transaction validation."""
+"""Tests for finagent.domain.models."""
 
 from datetime import date
 from decimal import Decimal
@@ -6,12 +6,12 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from finagent.domain.models import AccountType, Issuer, ParsedStatement, Transaction
+from finagent.domain.models import AccountType, ParsedStatement, Transaction
 
 
 def _make_transaction(**overrides: object) -> Transaction:
     defaults: dict[str, object] = {
-        "issuer": Issuer.TD,
+        "issuer": "TD",
         "account_type": AccountType.DEBIT,
         "account_label": "Chequing 1234",
         "posted_date": date(2024, 1, 15),
@@ -70,13 +70,41 @@ def test_transaction_default_row_sequence_is_zero() -> None:
     assert tx.row_sequence == 0
 
 
+def test_transaction_issuer_is_normalized_to_stripped_uppercase() -> None:
+    tx = _make_transaction(issuer="  td  ")
+    assert tx.issuer == "TD"
+
+
+def test_transaction_rejects_empty_issuer() -> None:
+    with pytest.raises(ValidationError):
+        _make_transaction(issuer="   ")
+
+
+def test_transaction_accepts_novel_issuer_without_code_changes() -> None:
+    # AGENTS.md §3: "No per-issuer parsers." A new issuer name must just work.
+    tx = _make_transaction(issuer="Scotiabank")
+    assert tx.issuer == "SCOTIABANK"
+
+
 def test_parsed_statement_holds_transactions() -> None:
     tx = _make_transaction()
     stmt = ParsedStatement(
-        issuer=Issuer.TD,
-        account_label="Chequing 1234",
+        issuer="TD",
+        account_name="TD Rewards Visa",
+        account_label="TD ****1234",
+        account_type=AccountType.CREDIT,
         period_start=date(2024, 1, 1),
         period_end=date(2024, 1, 31),
         transactions=(tx,),
     )
     assert stmt.transactions == (tx,)
+
+
+def test_parsed_statement_default_currency_is_cad() -> None:
+    stmt = ParsedStatement(
+        issuer="TD",
+        account_name="TD Rewards Visa",
+        account_label="TD ****1234",
+        account_type=AccountType.CREDIT,
+    )
+    assert stmt.currency == "CAD"

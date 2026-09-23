@@ -3,13 +3,13 @@
 from datetime import date
 from decimal import Decimal
 
-from finagent.domain.hashing import assign_row_sequences, normalize_description, transaction_hash
-from finagent.domain.models import AccountType, Issuer, Transaction
+from finagent.domain.hashing import assign_row_sequences, normalize_account_label, transaction_hash
+from finagent.domain.models import AccountType, Transaction
 
 
 def _debit_tx(**overrides: object) -> Transaction:
     defaults: dict[str, object] = {
-        "issuer": Issuer.TD,
+        "issuer": "TD",
         "account_type": AccountType.DEBIT,
         "account_label": "Chequing 1234",
         "posted_date": date(2024, 1, 15),
@@ -23,7 +23,7 @@ def _debit_tx(**overrides: object) -> Transaction:
 
 def _credit_tx(**overrides: object) -> Transaction:
     defaults: dict[str, object] = {
-        "issuer": Issuer.AMEX,
+        "issuer": "AMEX",
         "account_type": AccountType.CREDIT,
         "account_label": "Gold Card 1234",
         "posted_date": date(2024, 1, 15),
@@ -34,8 +34,8 @@ def _credit_tx(**overrides: object) -> Transaction:
     return Transaction.model_validate(defaults)
 
 
-def test_normalize_description_collapses_whitespace_and_uppercases() -> None:
-    assert normalize_description("  coffee   shop\t#42  ") == "COFFEE SHOP #42"
+def test_normalize_account_label_strips_and_uppercases() -> None:
+    assert normalize_account_label("  td ****1234  ") == "TD ****1234"
 
 
 def test_transaction_hash_is_deterministic() -> None:
@@ -49,15 +49,11 @@ def test_transaction_hash_is_64_char_hex() -> None:
     int(digest, 16)  # raises ValueError if not valid hex
 
 
-def test_transaction_hash_differs_for_different_descriptions() -> None:
+def test_transaction_hash_ignores_description() -> None:
+    # AGENTS.md §3: hash inputs must be stable across LLM runs, so free
+    # text such as the transcribed description must never affect the hash.
     tx_a = _debit_tx(description="COFFEE SHOP")
     tx_b = _debit_tx(description="GROCERY STORE")
-    assert transaction_hash(tx_a) != transaction_hash(tx_b)
-
-
-def test_transaction_hash_normalizes_description_case_and_whitespace() -> None:
-    tx_a = _debit_tx(description="Coffee   Shop")
-    tx_b = _debit_tx(description="  COFFEE SHOP  ")
     assert transaction_hash(tx_a) == transaction_hash(tx_b)
 
 
@@ -69,7 +65,7 @@ def test_debit_hash_depends_on_running_balance() -> None:
 
 def test_credit_hash_depends_on_account_label() -> None:
     # Two cards of the same issuer/type (e.g. two TD Visas) must not collide
-    # even when date/description/amount/row_sequence are identical.
+    # even when date/amount/row_sequence are identical.
     tx_a = _credit_tx(account_label="Visa Infinite 1111")
     tx_b = _credit_tx(account_label="Visa Infinite 2222")
     assert transaction_hash(tx_a) != transaction_hash(tx_b)
@@ -107,7 +103,7 @@ def test_assign_row_sequences_numbers_duplicates_in_order() -> None:
     assert result[2].row_sequence == 1  # dup2
 
 
-def test_assign_row_sequences_distinguishes_by_date_description_amount() -> None:
+def test_assign_row_sequences_distinguishes_by_date_and_amount() -> None:
     tx_a = _credit_tx(posted_date=date(2024, 1, 15))
     tx_b = _credit_tx(posted_date=date(2024, 1, 16))
 
@@ -115,6 +111,19 @@ def test_assign_row_sequences_distinguishes_by_date_description_amount() -> None
 
     assert result[0].row_sequence == 0
     assert result[1].row_sequence == 0
+
+
+def test_assign_row_sequences_groups_different_descriptions_together() -> None:
+    # Description is not part of the dedup key: two same-day, same-amount
+    # lines with different (LLM-transcribed) descriptions are still treated
+    # as duplicates and numbered.
+    tx_a = _credit_tx(description="COFFEE SHOP")
+    tx_b = _credit_tx(description="COFFEE SHOP #42")
+
+    result = assign_row_sequences([tx_a, tx_b])
+
+    assert result[0].row_sequence == 0
+    assert result[1].row_sequence == 1
 
 
 def test_assign_row_sequences_preserves_other_fields() -> None:

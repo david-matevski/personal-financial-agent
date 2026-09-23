@@ -3,14 +3,15 @@
 [![Quality gate](https://github.com/david-matevski/personal-financial-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/david-matevski/personal-financial-agent/actions/workflows/ci.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 
-A self-hosted backend that extracts transactions from credit card statements (Amex, CIBC, TD, and more) via PDF text extraction with OCR fallback. Automatically categorizes spending, stores results in PostgreSQL, and exposes a REST API for querying your financial data.
+A self-hosted backend that extracts transactions from any bank or credit card statement (PDF, image, CSV, or Excel export) using Claude, verifies them against the statement's own totals, categorizes spending, stores results in PostgreSQL, and exposes a REST API for querying your financial data.
 
 ## Pipeline
 
 ```
 Statement (PDF / image / CSV / XLS)
-   └─> ingest     : detect issuer (Amex, CIBC, TD, ...) and pick a parser
-   └─> extract    : text-layer PDF parse first, OCR fallback for scans
+   └─> ingest     : detect format and load into SourceDocument
+   └─> extract    : Claude reads document and transcribes to structured JSON
+   └─> validate   : transactions must reconcile to the printed totals
    └─> normalize  : canonical Transaction model (dates, signs, currency)
    └─> categorize : rule-based first, ML/LLM-assisted later
    └─> persist    : PostgreSQL, idempotent (hash-based dedup)
@@ -19,21 +20,22 @@ Statement (PDF / image / CSV / XLS)
 
 **Status:** early development
 
-## Supported issuers
+## Supported statements
 
-| Issuer | Status |
+There are no per-bank parsers: any statement Claude can read is supported,
+and every extraction is checked against the statement's printed totals.
+
+| Verified so far | Format |
 |--------|--------|
-| Amex | Planned |
-| CIBC | Planned |
-| TD | Planned |
+| Amex | XLS transaction export |
+| TD Visa | PDF statement |
 
 ## Roadmap
 
 - [x] Domain model & dedup hashing
 - [x] Health API
 - [ ] PostgreSQL schema & migrations
-- [ ] PDF text extraction + OCR fallback
-- [ ] Issuer parsers (Amex, CIBC, TD)
+- [x] AI extraction (Claude) with totals reconciliation
 - [ ] Categorization rules engine
 - [ ] Upload & query API
 
@@ -41,7 +43,6 @@ Statement (PDF / image / CSV / XLS)
 
 - **Python 3.10+**
 - **PostgreSQL 16**
-- **Tesseract OCR** (optional, for scanned statements)
 
 ## Quick start
 
@@ -52,7 +53,7 @@ python -m venv .venv
 .venv/Scripts/activate   # Windows; use .venv/bin/activate on macOS/Linux
 cp .env.example .env
 # Edit .env with your database URL and other settings
-pip install -e ".[dev,ocr]"
+pip install -e ".[dev]"
 uvicorn finagent.api.app:app --reload
 ```
 
@@ -65,8 +66,11 @@ GET http://localhost:8000/health
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `ANTHROPIC_API_KEY` | Anthropic API key for statement extraction | none |
 | `FINAGENT_DATABASE_URL` | PostgreSQL connection string | `postgresql+psycopg://finagent:finagent@localhost:5432/finagent` |
 | `FINAGENT_LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | `INFO` |
+| `FINAGENT_EXTRACTION_MODEL` | Claude model used to extract transactions from statements | `claude-opus-5-5` |
+| `FINAGENT_EXTRACTION_EFFORT` | Claude reasoning effort (low, medium, high, xhigh, max) | `high` |
 
 ## Development
 
