@@ -11,14 +11,20 @@ one-off instruction in a task prompt, the task prompt wins for that task only.
 A self-hosted personal-finance backend:
 
 ```
-Statement (PDF / image / CSV / XLS)
-   └─> ingest     : detect issuer (Amex, CIBC, TD, ...) and pick a parser
-   └─> extract    : text-layer PDF parse first, OCR fallback for scans
-   └─> normalize  : canonical Transaction model (dates, signs, currency)
-   └─> categorize : rule-based first, ML/LLM-assisted later
+Statement (any issuer; PDF / image / CSV / XLS / XLSX)
+   └─> load       : sniff format → SourceDocument (raw PDF/image bytes, or table rows)
+   └─> extract    : Claude reads the document → strict JSON (no per-issuer parsers)
+   └─> validate   : deterministic checks — totals reconcile, dates in period, 2dp
+   └─> normalize  : canonical Transaction model (signs, Decimal, dedup hash)
+   └─> categorize : rule-based first, LLM for unmatched merchants
    └─> persist    : PostgreSQL, idempotent (hash-based dedup)
    └─> expose     : REST API (FastAPI)
 ```
+
+**Design principle:** the model *reads*; code *decides*. The LLM only
+transcribes what the statement says. Signs, money types, hashing, and the
+accept/reject decision are deterministic code, so a model mistake is
+caught by validation rather than trusted.
 
 **This is a PUBLIC repository.** Real financial data never enters git. See §6.
 
@@ -32,7 +38,7 @@ cheaper models do the bulk of the typing.
 | Role | Model | Owns | Must not |
 |---|---|---|---|
 | **Orchestrator** | Opus | Architecture, task breakdown, schema/API design decisions, reviewing every diff before commit, editing this file | Write large amounts of feature code itself when a delegate could |
-| **Implementer** (`.claude/agents/implementer.md`) | Sonnet | Feature code, parsers, migrations, API endpoints, the tests for them | Change architecture, public API contracts, or DB schema beyond the task spec without flagging it |
+| **Implementer** (`.claude/agents/implementer.md`) | Sonnet | Feature code, extraction, migrations, API endpoints, the tests for them | Change architecture, public API contracts, or DB schema beyond the task spec without flagging it |
 | **Chore** (`.claude/agents/chore.md`) | Haiku | Docs, fixtures, renames, formatting, dependency bumps, boilerplate, small well-specified edits | Make design decisions; touch more files than the task lists |
 | **Reviewer** (`.claude/agents/reviewer.md`) | Sonnet | Read-only review of a diff against this file; reports findings | Edit files |
 
@@ -64,8 +70,10 @@ src/finagent/
   core/           config (pydantic-settings), logging, shared types
   domain/         pure models & logic (Transaction, Money, hashing). No I/O.
   ingest/
-    extract/      PDF text / OCR backends behind one Protocol
-    parsers/      one module per issuer: amex.py, cibc.py, td.py ...
+    loaders.py    bytes → SourceDocument
+    extract/      AI extraction behind a StatementExtractor Protocol (Anthropic impl)
+    validate.py   reconciliation & sanity checks (pure)
+    pipeline.py   load → extract → validate (→ retry) → ParsedStatement
   categorize/     rule engine, later ML
   db/             SQLAlchemy models, session, repositories
 migrations/       Alembic
@@ -76,20 +84,27 @@ tests/            mirrors src/ layout; fixtures/ holds SYNTHETIC samples only
 
 - **Money is `Decimal`, never `float`.** Store as `NUMERIC(14,2)`.
 - **Sign convention:** positive = money out (purchases, fees); negative =
-  money in (payments, refunds, income). Normalise in the parser, nowhere else.
+  money in (payments, refunds, income). Normalise in code after extraction (`ingest/`), nowhere else.
 - **Dates** are `datetime.date`, America/Toronto assumed unless the source says otherwise.
 - **Dedup:** every transaction gets a deterministic SHA-256 `transaction_hash`;
   inserts are `ON CONFLICT DO NOTHING`. Re-importing a statement is a no-op.
-- **One parser per issuer format**, each implementing the `StatementParser`
-  protocol (`can_parse(doc) -> bool`, `parse(doc) -> ParsedStatement`) over a
-  `SourceDocument` (`ingest/document.py`): PDFs arrive as page text, exports
-  (XLS/XLSX/CSV) as rows. Adding an issuer must not require editing another
-  issuer's parser.
-- **Parsers reconcile.** Where a statement prints totals (previous/new
-  balance, charges, payments), the parser checks its transactions sum to
-  them and raises `ParseError` on mismatch. Never return partial data.
-- **Extraction strategy:** text-layer first (pdfplumber); OCR only when the
-  page has no usable text. OCR backend is swappable behind a Protocol.
+  Hash inputs must be stable across LLM runs: never free text such as
+  descriptions or product names — only normalized issuer, account last-4,
+  dates, amounts, and sequence/balance.
+- **No per-issuer parsers.** New issuers and formats must work without new
+  code. Issuer-specific knowledge, if ever needed, goes in the extraction
+  prompt, not in branching code.
+- **The LLM transcribes, code interprets.** The extraction schema asks for
+  amounts as printed (strings) plus a direction (money out / money in);
+  code converts to `Decimal` and applies the sign convention. Never ask the
+  model to do arithmetic we then trust.
+- **Validate everything.** Where a statement prints totals, transactions
+  must reconcile to them; one retry with the discrepancy fed back, then the
+  statement is marked `FAILED` for review — never silently accepted.
+  Statements with no printed totals are marked `UNVERIFIED`, not `VERIFIED`.
+- **LLM access** goes only through the `StatementExtractor` Protocol. Tests
+  use fakes; no test ever calls the real API. Model ID and API key come
+  from config.
 - Type hints everywhere; `mypy --strict` clean. No `Any` without a comment saying why.
 - Functions do one thing. Prefer pure functions in `domain/`; push I/O to the edges.
 - No dead code, commented-out code, or speculative abstractions. Build what
@@ -104,8 +119,11 @@ tests/            mirrors src/ layout; fixtures/ holds SYNTHETIC samples only
 
 ### Tests
 
-- Every parser ships with tests against **synthetic** fixtures that mimic the
-  issuer's layout (fake names, fake card numbers, made-up merchants).
+- Extraction logic is tested with a fake extractor returning **synthetic**
+  extraction payloads (fake names, card numbers, merchants).
+- Real-API accuracy is measured by `scripts/eval_extraction.py` against the
+  git-ignored `statements/` samples and `statements/expected/` baselines.
+  It is run manually (it costs money), never in CI.
 - Domain logic: unit tests. API: `httpx` / FastAPI `TestClient` tests.
 - DB tests run against a real Postgres (docker compose / CI service), not SQLite.
 - A bug fix includes a test that fails without the fix.
@@ -137,7 +155,7 @@ say so explicitly in the report — never claim green when it isn't.
 ```
 
 - **types:** `feat` `fix` `refactor` `test` `docs` `chore` `build` `ci` `perf`
-- **scopes:** `api` `ingest` `parser/<issuer>` `ocr` `categorize` `db` `core` `deps` `repo`
+- **scopes:** `api` `ingest` `extract` `categorize` `db` `core` `deps` `repo`
 - One logical change per commit. Tests go in the same commit as the code
   they test. Formatting-only changes go in their own commit.
 - Every commit passes the quality gate (§4) on its own.
@@ -147,7 +165,7 @@ say so explicitly in the report — never claim green when it isn't.
 
 Examples:
 ```
-feat(parser/amex): parse Amex Gold PDF statement transactions
+feat(extract): extract statements with Claude structured output
 fix(ingest): treat CR suffix as a credit on CIBC statements
 test(categorize): cover priority ordering of overlapping rules
 ```
@@ -163,13 +181,14 @@ test(categorize): cover priority ordering of overlapping rules
 - `.env` is ignored; `.env.example` documents every variable with dummy values.
 - If you ever see real personal data staged, stop and report it. Do not commit.
 - Real sample statements live in the git-ignored `statements/` folder so
-  parsers can be developed against true layouts. Agents may **read** them
+  extraction can be evaluated against true layouts. Agents may **read** them
   to learn structure, but must never copy their contents into code,
   comments, tests, fixtures, commit messages, or task reports: no real
   merchant lines, names, addresses, amounts, card/account digits. Fixtures
   are written from scratch with invented values that mimic the layout.
-- Parser code matches on layout markers (headings, column labels, date/amount
-  patterns) — never on the account holder's name or account numbers.
+- Statements are sent to the Anthropic API for extraction (owner-approved).
+  Never send them anywhere else, and never log raw extraction payloads at
+  INFO or above.
 
 ---
 
