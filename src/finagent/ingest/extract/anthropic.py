@@ -17,6 +17,10 @@ retried on Anthropic's recommended substitute model instead of surfacing a
 refusal to the caller. This is compatible with structured output on the
 installed SDK (1.8.0): ``beta.messages.stream`` takes both ``output_format``
 and ``fallbacks`` as ordinary parameters.
+
+The system prompt is cached (stable prefix, >=512 tokens on Opus 5.x); the
+document is not cached because each statement is unique, and a cache write
+costs 1.25x.
 """
 
 import base64
@@ -79,7 +83,9 @@ class AnthropicStatementExtractor:
             with self._client.beta.messages.stream(
                 model=self._model,
                 max_tokens=_MAX_TOKENS,
-                system=SYSTEM_PROMPT,
+                system=[
+                    {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+                ],
                 messages=cast(list[BetaMessageParam], messages),
                 output_config=cast(BetaOutputConfigParam, {"effort": self._effort}),
                 output_format=StatementExtraction,

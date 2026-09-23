@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
-    extraction_model: str = "claude-opus-5"
-    extraction_effort: str = "high"
+    extraction_model: str = "claude-opus-5-5"
+    extraction_effort: str = "high"  # Set explicitly; Opus 5.5's API default is medium
 
 
 @lru_cache

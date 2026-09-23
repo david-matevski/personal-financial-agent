@@ -34,7 +34,7 @@ def test_extraction_model_and_effort_have_defaults(monkeypatch: pytest.MonkeyPat
 
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
-    assert settings.extraction_model == "claude-opus-5"
+    assert settings.extraction_model == "claude-opus-5-5"
     assert settings.extraction_effort == "high"
 
 

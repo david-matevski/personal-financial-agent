@@ -10,6 +10,7 @@ import pytest
 from finagent.core.errors import ExtractionError
 from finagent.ingest.document import DocumentKind, SourceDocument
 from finagent.ingest.extract.anthropic import AnthropicStatementExtractor
+from finagent.ingest.extract.prompt import SYSTEM_PROMPT
 from finagent.ingest.extract.schema import StatementExtraction
 
 _PARSED = StatementExtraction(
@@ -80,7 +81,7 @@ def _pdf_doc() -> SourceDocument:
 def test_request_puts_document_block_before_text_block() -> None:
     captured: dict[str, Any] = {}
     client = _FakeClient(_FakeMessages(_message("end_turn", _PARSED), captured))
-    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5", effort="high")  # type: ignore[arg-type]
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
 
     extractor.extract(_pdf_doc())
 
@@ -92,19 +93,35 @@ def test_request_puts_document_block_before_text_block() -> None:
 def test_request_uses_model_and_effort_from_config() -> None:
     captured: dict[str, Any] = {}
     client = _FakeClient(_FakeMessages(_message("end_turn", _PARSED), captured))
-    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5", effort="xhigh")  # type: ignore[arg-type]
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="xhigh")  # type: ignore[arg-type]
 
     extractor.extract(_pdf_doc())
 
-    assert captured["model"] == "claude-opus-5"
+    assert captured["model"] == "claude-opus-5-5"
     assert captured["output_config"] == {"effort": "xhigh"}
     assert captured["output_format"] is StatementExtraction
+
+
+def test_system_prompt_is_cached() -> None:
+    captured: dict[str, Any] = {}
+    client = _FakeClient(_FakeMessages(_message("end_turn", _PARSED), captured))
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
+
+    extractor.extract(_pdf_doc())
+
+    system = captured["system"]
+    assert isinstance(system, list)
+    assert len(system) == 1
+    block = system[0]
+    assert block["type"] == "text"
+    assert block["text"] == SYSTEM_PROMPT
+    assert block["cache_control"] == {"type": "ephemeral"}
 
 
 def test_feedback_is_included_in_the_request() -> None:
     captured: dict[str, Any] = {}
     client = _FakeClient(_FakeMessages(_message("end_turn", _PARSED), captured))
-    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5", effort="high")  # type: ignore[arg-type]
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
 
     extractor.extract(_pdf_doc(), feedback="transactions summed to 5.00, expected 10.00")
 
@@ -115,7 +132,7 @@ def test_feedback_is_included_in_the_request() -> None:
 def test_max_tokens_stop_raises_extraction_error() -> None:
     captured: dict[str, Any] = {}
     client = _FakeClient(_FakeMessages(_message("max_tokens", None), captured))
-    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5", effort="high")  # type: ignore[arg-type]
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
 
     with pytest.raises(ExtractionError):
         extractor.extract(_pdf_doc())
@@ -124,7 +141,7 @@ def test_max_tokens_stop_raises_extraction_error() -> None:
 def test_refusal_stop_raises_extraction_error() -> None:
     captured: dict[str, Any] = {}
     client = _FakeClient(_FakeMessages(_message("refusal", None), captured))
-    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5", effort="high")  # type: ignore[arg-type]
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
 
     with pytest.raises(ExtractionError):
         extractor.extract(_pdf_doc())
@@ -134,7 +151,7 @@ def test_sdk_api_error_is_wrapped_in_extraction_error() -> None:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     sdk_error = anthropic.APIConnectionError(message="connection reset", request=request)
     client = _FakeClient(_RaisingMessages(sdk_error))
-    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5", effort="high")  # type: ignore[arg-type]
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
 
     with pytest.raises(ExtractionError):
         extractor.extract(_pdf_doc())
