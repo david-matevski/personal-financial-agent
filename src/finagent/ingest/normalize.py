@@ -56,9 +56,18 @@ def parse_optional_iso_date(raw: str | None) -> date | None:
     return parse_iso_date(raw)
 
 
+def normalize_issuer(issuer: str) -> str:
+    """Canonical issuer key, shared by account identity and dedup hashes."""
+    return issuer.strip().upper()
+
+
+def normalize_last4(last4: str) -> str:
+    """Digits only, last four, so masking/spacing variants map to one account."""
+    return _NON_DIGIT_RE.sub("", last4)[-4:]
+
+
 def _account_label(issuer: str, last4: str) -> str:
-    digits = _NON_DIGIT_RE.sub("", last4)
-    return f"{issuer.strip().upper()} ****{digits}"
+    return f"{normalize_issuer(issuer)} ****{normalize_last4(last4)}"
 
 
 def _normalize_transaction(

@@ -55,5 +55,8 @@ jobs:
       - name: Type check with mypy
         run: mypy src
 
+      - name: Apply database migrations
+        run: alembic upgrade head
+
       - name: Run tests with pytest
         run: pytest

@@ -54,6 +54,27 @@ def test_first_attempt_verified_needs_no_retry() -> None:
     assert result.status is ValidationStatus.VERIFIED
     assert result.attempts == 1
     assert len(extractor.feedbacks) == 1
+    assert result.extraction.issuer == "TD"
+
+
+def test_result_extraction_is_the_final_attempt() -> None:
+    wrong = _extraction(
+        transactions=[
+            {
+                "posted_date": "2026-01-05",
+                "description": "Fictional Coffee Co",
+                "amount": "3.00",
+                "direction": "OUT",
+            }
+        ]
+    )
+    corrected = _extraction()  # sums to 5.00, reconciles
+    extractor = FakeExtractor([wrong, corrected])
+
+    result = extract_statement("statement.csv", _CSV_BYTES, extractor)
+
+    assert result.extraction is corrected
+    assert result.extraction.transactions[0].amount == "5.00"
 
 
 def test_retry_triggered_with_feedback_and_succeeds_on_second_attempt() -> None:

@@ -8,7 +8,7 @@ import pytest
 from finagent.core.errors import ParseError
 from finagent.domain.models import AccountType
 from finagent.ingest.extract.schema import StatementExtraction
-from finagent.ingest.normalize import normalize, parse_amount
+from finagent.ingest.normalize import normalize, normalize_issuer, normalize_last4, parse_amount
 
 
 def _extraction(**overrides: object) -> StatementExtraction:
@@ -139,3 +139,12 @@ def test_normalize_assigns_row_sequence_to_duplicate_lines() -> None:
     extraction = _extraction(transactions=[tx, dict(tx)])
     statement = normalize(extraction)
     assert [t.row_sequence for t in statement.transactions] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    ("issuer", "last4"),
+    [("TD", "1234"), (" td ", "1234"), ("Td", "**** 1234"), ("TD", "XXXX-XXXX-1234")],
+)
+def test_issuer_and_last4_variants_normalize_to_one_identity(issuer: str, last4: str) -> None:
+    assert normalize_issuer(issuer) == "TD"
+    assert normalize_last4(last4) == "1234"
