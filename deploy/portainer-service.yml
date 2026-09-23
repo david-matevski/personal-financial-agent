@@ -1,0 +1,43 @@
+# finagent-api service, to be merged into the existing crestlink-web
+# Portainer stack (NOT deployed standalone -- there is no top-level
+# `services:`/`networks:` here, just the one service block to paste in).
+#
+# How to add it:
+#   1. Portainer -> Stacks -> crestlink-web -> Editor.
+#   2. Paste the `finagent-api:` block below under the stack's existing
+#      `services:` key (same indentation level as the other services).
+#   3. In the stack's "Environment variables" section, set:
+#        FINAGENT_DATABASE_URL, ANTHROPIC_API_KEY, FINAGENT_API_TOKEN,
+#        FINAGENT_EXTRACTION_MODEL, FINAGENT_EXTRACTION_EFFORT
+#   4. Click "Update the stack".
+#
+# The database URL's host is `crestlink-postgres` (the Postgres service
+# already in this stack), e.g.:
+#   FINAGENT_DATABASE_URL=postgresql+psycopg://finagent_app:<password>@crestlink-postgres:5432/finagent
+#
+# Smoke-test from the host once the stack is updated:
+#   docker exec finagent-api python -c \
+#     "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status)"
+#
+# No `ports:` are published -- this service is reached only from other
+# containers in the stack. It joins the stack's default network
+# automatically because it's defined in the same compose file as
+# crestlink-postgres; no explicit `networks:` entry is needed.
+#
+# No depends_on: the Postgres service name varies between stacks, and a wrong
+# name would make Portainer reject the whole stack update. If Postgres isn't
+# ready yet, `alembic upgrade head` fails and restart: unless-stopped retries.
+#
+# Do NOT add a Cloudflare public hostname for this service yet.
+
+  finagent-api:
+    build:
+      context: https://github.com/david-matevski/personal-financial-agent.git#main
+    container_name: finagent-api
+    restart: unless-stopped
+    environment:
+      FINAGENT_DATABASE_URL: ${FINAGENT_DATABASE_URL}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      FINAGENT_API_TOKEN: ${FINAGENT_API_TOKEN}
+      FINAGENT_EXTRACTION_MODEL: ${FINAGENT_EXTRACTION_MODEL}
+      FINAGENT_EXTRACTION_EFFORT: ${FINAGENT_EXTRACTION_EFFORT}

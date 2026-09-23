@@ -13,7 +13,13 @@ from finagent.core.config import get_settings
 @lru_cache
 def get_engine() -> Engine:
     """Return the process-wide engine, created on first use."""
-    return create_engine(get_settings().database_url)
+    # Fail fast when Postgres is unreachable instead of blocking a request
+    # (or a test run) on the OS-level TCP connect timeout.
+    return create_engine(
+        get_settings().database_url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": 10},
+    )
 
 
 @lru_cache

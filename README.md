@@ -34,10 +34,10 @@ and every extraction is checked against the statement's printed totals.
 
 - [x] Domain model & dedup hashing
 - [x] Health API
-- [ ] PostgreSQL schema & migrations
+- [x] PostgreSQL schema & migrations
 - [x] AI extraction (Claude) with totals reconciliation
 - [ ] Categorization rules engine
-- [ ] Upload & query API
+- [x] Upload & query API
 
 ## Requirements
 
@@ -71,6 +71,42 @@ GET http://localhost:8000/health
 | `FINAGENT_LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | `INFO` |
 | `FINAGENT_EXTRACTION_MODEL` | Claude model used to extract transactions from statements | `claude-opus-5-5` |
 | `FINAGENT_EXTRACTION_EFFORT` | Claude reasoning effort (low, medium, high, xhigh, max) | `high` |
+| `FINAGENT_API_TOKEN` | Bearer token required by every endpoint except `GET /health` | none (fails closed) |
+
+## API
+
+Every endpoint except `GET /health` requires a bearer token, set via
+`FINAGENT_API_TOKEN`:
+
+```
+Authorization: Bearer <FINAGENT_API_TOKEN>
+```
+
+| Method | Path | Description | Query / body params |
+|--------|------|-------------|----------------------|
+| `GET` | `/health` | Liveness check (no auth) | — |
+| `POST` | `/statements` | Upload a statement file for extraction and persistence. Re-uploading identical bytes is a no-op (`already_imported: true`) and never re-calls the extractor. | body: `file` (multipart) |
+| `GET` | `/statements` | List statements, newest first | `status`, `limit` (default 50, max 500), `offset` |
+| `GET` | `/statements/{statement_id}` | Fetch one statement | `include_extraction` (bool, default false) |
+| `GET` | `/accounts` | List accounts | — |
+| `GET` | `/transactions` | List transactions, newest first | `account_id`, `date_from`, `date_to`, `category_id`, `limit` (default 100, max 1000), `offset` |
+| `GET` | `/categories` | List categories | — |
+
+Upload a statement with curl:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -F file=@statement.pdf http://localhost:8000/statements
+```
+
+## Deploy (homeserver)
+
+The API ships as a Docker image built from this repo's `Dockerfile`
+(multi-stage build, non-root runtime user, `alembic upgrade head` run on
+container start before `uvicorn` starts). To add it to the homeserver's
+existing `crestlink-web` Portainer stack, see
+[`deploy/portainer-service.yml`](deploy/portainer-service.yml) — it has the
+service block to paste in plus step-by-step instructions in its header
+comment.
 
 ## Development
 

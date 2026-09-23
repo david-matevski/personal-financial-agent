@@ -1,4 +1,4 @@
-"""Shared fixtures for tests/db.
+"""Shared fixtures for any DB-backed test (tests/db, tests/api).
 
 These tests run against a real Postgres (AGENTS.md: "DB tests run against a
 real Postgres ... not SQLite"). If ``FINAGENT_DATABASE_URL`` is unreachable
@@ -16,7 +16,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ALEMBIC_INI = os.path.join(_REPO_ROOT, "alembic.ini")
 
 _DEFAULT_URL = "postgresql+psycopg://finagent:finagent@localhost:5432/finagent"

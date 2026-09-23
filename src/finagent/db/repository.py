@@ -7,12 +7,13 @@ happens in one transaction; the caller owns commit.
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from finagent.db.models import Account, Statement
+from finagent.db.models import Account, Category, Statement
 from finagent.db.models import Transaction as TransactionRow
 from finagent.domain.hashing import transaction_hash
 from finagent.domain.models import Transaction as DomainTransaction
@@ -53,9 +54,7 @@ def save_extraction(
     ``ON CONFLICT (transaction_hash) DO NOTHING``, since a FAILED
     extraction's transactions are not trustworthy (AGENTS.md §3).
     """
-    existing = session.execute(
-        select(Statement).where(Statement.file_sha256 == file_sha256)
-    ).scalar_one_or_none()
+    existing = get_statement_by_sha256(session, file_sha256)
     if existing is not None:
         return SavedStatement(
             statement_id=existing.id,
@@ -187,3 +186,64 @@ def _insert_transactions(
     inserted = len(inserted_ids)
     skipped = len(rows) - inserted
     return inserted, skipped
+
+
+# --- Read-only lookups for the API (AGENTS.md: no business logic in routes) ---
+
+
+def get_statement_by_sha256(session: Session, file_sha256: str) -> Statement | None:
+    """Look up a statement by content hash, e.g. to skip re-extraction on re-upload."""
+    return session.execute(
+        select(Statement).where(Statement.file_sha256 == file_sha256)
+    ).scalar_one_or_none()
+
+
+def get_statement(session: Session, statement_id: int) -> Statement | None:
+    """Look up a statement by id."""
+    return session.get(Statement, statement_id)
+
+
+def list_statements(
+    session: Session, *, status: str | None = None, limit: int = 50, offset: int = 0
+) -> list[Statement]:
+    """List statements, newest first, optionally filtered by status."""
+    stmt = select(Statement).order_by(Statement.id.desc()).limit(limit).offset(offset)
+    if status is not None:
+        stmt = stmt.where(Statement.status == status)
+    return list(session.execute(stmt).scalars().all())
+
+
+def list_accounts(session: Session) -> list[Account]:
+    """List every account."""
+    return list(session.execute(select(Account).order_by(Account.id)).scalars().all())
+
+
+def list_transactions(
+    session: Session,
+    *,
+    account_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    category_id: int | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[TransactionRow]:
+    """List transactions, newest first, with optional filters."""
+    stmt = select(TransactionRow).order_by(
+        TransactionRow.posted_date.desc(), TransactionRow.id.desc()
+    )
+    if account_id is not None:
+        stmt = stmt.where(TransactionRow.account_id == account_id)
+    if date_from is not None:
+        stmt = stmt.where(TransactionRow.posted_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(TransactionRow.posted_date <= date_to)
+    if category_id is not None:
+        stmt = stmt.where(TransactionRow.category_id == category_id)
+    stmt = stmt.limit(limit).offset(offset)
+    return list(session.execute(stmt).scalars().all())
+
+
+def list_categories(session: Session) -> list[Category]:
+    """List every category."""
+    return list(session.execute(select(Category).order_by(Category.id)).scalars().all())
