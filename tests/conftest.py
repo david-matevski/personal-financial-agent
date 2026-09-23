@@ -19,6 +19,16 @@ from sqlalchemy.orm import Session, sessionmaker
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ALEMBIC_INI = os.path.join(_REPO_ROOT, "alembic.ini")
 
+# Must be set before the first call to finagent.core.config.get_settings()
+# anywhere in the test session (its result is process-wide cached). Without
+# this, FastAPI's lifespan would start the real UploadWorker background
+# thread -- reading real .env settings, since get_settings() is called
+# directly there rather than through a request-scoped, overridable
+# Depends() -- against whatever database and Anthropic key the environment
+# happens to have. Every test that spins up the app via TestClient must
+# never do that.
+os.environ.setdefault("FINAGENT_RUN_WORKER", "false")
+
 _DEFAULT_URL = "postgresql+psycopg://finagent:finagent@localhost:5432/finagent"
 
 

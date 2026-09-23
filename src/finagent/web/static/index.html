@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinDash</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+
+  <header class="app-header" hidden>
+    <div class="app-header__brand">FinDash</div>
+    <nav class="app-nav" aria-label="Main navigation">
+      <a href="#/upload" data-route="upload">Upload</a>
+      <a href="#/statements" data-route="statements">Statements</a>
+      <a href="#/transactions" data-route="transactions">Transactions</a>
+      <a href="#/accounts" data-route="accounts">Accounts</a>
+    </nav>
+    <button type="button" id="sign-out-btn" class="btn btn--ghost">Sign out</button>
+  </header>
+
+  <main id="main" class="app-main" aria-live="polite">
+    <!-- views are rendered here -->
+  </main>
+
+  <footer class="app-footer">
+    <span id="api-version-label"></span>
+  </footer>
+
+</div>
+
+<template id="tpl-connect">
+  <div class="connect-screen">
+    <h1>Connect to FinDash</h1>
+    <p>Enter your API token to continue. It is stored only in your browser.</p>
+    <form id="connect-form" class="connect-form">
+      <label for="token-input">API token</label>
+      <input type="password" id="token-input" name="token" autocomplete="off" required>
+      <button type="submit" class="btn btn--primary">Connect</button>
+      <p id="connect-error" class="form-error" role="alert" hidden></p>
+    </form>
+  </div>
+</template>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

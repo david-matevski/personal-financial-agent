@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     api_token: SecretStr | None = None
     max_upload_bytes: int = 20 * 1024 * 1024
 
+    # Whether the FastAPI process runs the async upload-processing worker
+    # thread (see finagent.worker). Tests set this False to avoid a
+    # background thread racing the test's own DB session.
+    run_worker: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

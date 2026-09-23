@@ -14,6 +14,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    LargeBinary,
     SmallInteger,
     UniqueConstraint,
     func,
@@ -82,6 +83,44 @@ class Statement(Base):
 
     account: Mapped["Account | None"] = relationship(back_populates="statements")
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="statement")
+
+
+class Upload(Base):
+    """One async-upload job: raw bytes queued for the worker to extract.
+
+    ``data`` holds the raw file only until it has been processed (DONE or
+    ERROR), then is set to NULL -- we don't retain raw statements once
+    extracted (AGENTS.md §6). ``error`` is a safe, generic message only,
+    never document content.
+    """
+
+    __tablename__ = "uploads"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'PROCESSING', 'DONE', 'ERROR')", name="ck_uploads_status"
+        ),
+        Index("ix_uploads_status_id", "status", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    filename: Mapped[str] = mapped_column(TEXT, nullable=False)
+    file_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    media_type: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    size_bytes: Mapped[int] = mapped_column(nullable=False)
+    data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    status: Mapped[str] = mapped_column(TEXT, nullable=False)
+    statement_id: Mapped[int | None] = mapped_column(
+        ForeignKey("statements.id", ondelete="SET NULL"), nullable=True
+    )
+    error: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    statement: Mapped["Statement | None"] = relationship()
 
 
 class Category(Base):

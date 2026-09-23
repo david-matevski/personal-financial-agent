@@ -51,6 +51,26 @@ class StatementDetail(StatementSummary):
     extraction: dict[str, object] | None = None
 
 
+class UploadOut(BaseModel):
+    """One row of GET /uploads, and the response body of POST/GET /uploads/{id}.
+
+    ``statement_status``/``transactions_inserted`` are populated once the
+    upload is linked to a statement (``statement_id`` set); ``null``
+    otherwise. This is the contract the browser UI polls against.
+    """
+
+    id: int
+    filename: str
+    size_bytes: int
+    status: str
+    error: str | None
+    statement_id: int | None
+    statement_status: str | None
+    transactions_inserted: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class AccountOut(BaseModel):
     """One row of GET /accounts."""
 
