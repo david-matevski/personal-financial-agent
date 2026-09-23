@@ -60,3 +60,16 @@ jobs:
 
       - name: Run tests with pytest
         run: pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t finagent-api:ci .
+
+      - name: Smoke-test the image
+        run: |
+          docker run --rm --entrypoint python finagent-api:ci -c "import finagent.api.app, alembic; print('imports ok')"
+          docker run --rm --entrypoint sh finagent-api:ci -c "test -x /app/docker/entrypoint.sh && cd /app && alembic heads"
