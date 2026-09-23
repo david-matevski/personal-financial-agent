@@ -72,6 +72,7 @@ GET http://localhost:8000/health
 | `FINAGENT_EXTRACTION_MODEL` | Claude model used to extract transactions from statements | `claude-opus-5-5` |
 | `FINAGENT_EXTRACTION_EFFORT` | Claude reasoning effort (low, medium, high, xhigh, max) | `high` |
 | `FINAGENT_API_TOKEN` | Bearer token required by every endpoint except `GET /health` | none (fails closed) |
+| `FINAGENT_RUN_WORKER` | Whether this process runs the background worker that drains the `POST /uploads` queue | `true` |
 
 ## API
 
@@ -85,14 +86,26 @@ Authorization: Bearer <FINAGENT_API_TOKEN>
 | Method | Path | Description | Query / body params |
 |--------|------|-------------|----------------------|
 | `GET` | `/health` | Liveness check (no auth) | — |
-| `POST` | `/statements` | Upload a statement file for extraction and persistence. Re-uploading identical bytes is a no-op (`already_imported: true`) and never re-calls the extractor. | body: `file` (multipart) |
+| `GET` | `/api-info` | Server identity check for the browser UI (no auth) | — |
+| `POST` | `/uploads` | Queue a statement file for background extraction; returns immediately (`202`). Re-uploading identical bytes is immediately `DONE` and never calls the extractor. Poll `GET /uploads/{id}` for the outcome. | body: `file` (multipart) |
+| `GET` | `/uploads` | List uploads, newest first | `limit` (default 50, max 500), `offset` |
+| `GET` | `/uploads/{upload_id}` | Fetch one upload's status | — |
+| `POST` | `/statements` | Upload a statement file for *synchronous* extraction and persistence (for scripts; the browser UI uses `/uploads` instead, since extraction can take 30-90s and the tunnel in front of this API cuts requests off at ~100s). Re-uploading identical bytes is a no-op (`already_imported: true`) and never re-calls the extractor. | body: `file` (multipart) |
 | `GET` | `/statements` | List statements, newest first | `status`, `limit` (default 50, max 500), `offset` |
 | `GET` | `/statements/{statement_id}` | Fetch one statement | `include_extraction` (bool, default false) |
 | `GET` | `/accounts` | List accounts | — |
 | `GET` | `/transactions` | List transactions, newest first | `account_id`, `date_from`, `date_to`, `category_id`, `limit` (default 100, max 1000), `offset` |
 | `GET` | `/categories` | List categories | — |
 
-Upload a statement with curl:
+Queue a statement for background extraction with curl (recommended -- doesn't block on the 30-90s extraction):
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -F file=@statement.pdf http://localhost:8000/uploads
+# {"id": 1, "status": "QUEUED", ...} -- poll:
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/uploads/1
+```
+
+Or upload synchronously (blocks until extraction finishes):
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" -F file=@statement.pdf http://localhost:8000/statements
