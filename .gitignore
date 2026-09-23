@@ -1,0 +1,40 @@
+# --- Financial data: never commit (public repo) ---
+data/
+statements/
+uploads/
+*.pdf
+*.xls
+*.xlsx
+*.csv
+*.ofx
+*.qfx
+# Synthetic test fixtures are the only exception
+!tests/fixtures/**
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Claude Code local settings ---
+.claude/settings.local.json
