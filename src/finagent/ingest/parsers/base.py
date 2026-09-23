@@ -8,21 +8,28 @@ another issuer's parser (AGENTS.md §3).
 from typing import Protocol
 
 from finagent.domain.models import Issuer, ParsedStatement
+from finagent.ingest.document import SourceDocument
 
 
 class StatementParser(Protocol):
-    """Recognizes and parses statements for one issuer."""
+    """Recognizes and parses statements for one issuer and format."""
 
     issuer: Issuer
 
-    def can_parse(self, pages: list[str]) -> bool:
-        """Return True if this parser recognizes the statement layout."""
+    def can_parse(self, doc: SourceDocument) -> bool:
+        """Return True if this parser recognizes the document's layout.
+
+        Must be cheap and must not raise: check the document kind and a few
+        identifying markers only.
+        """
         ...
 
-    def parse(self, pages: list[str]) -> ParsedStatement:
-        """Parse extracted page text into a ParsedStatement.
+    def parse(self, doc: SourceDocument) -> ParsedStatement:
+        """Parse the document into a ParsedStatement.
 
-        Raises ``finagent.core.errors.ParseError`` if the statement is
-        recognized but cannot be parsed.
+        Parsers reconcile extracted transactions against the statement's own
+        totals where the statement provides them, and raise
+        ``finagent.core.errors.ParseError`` on mismatch rather than returning
+        partial data.
         """
         ...

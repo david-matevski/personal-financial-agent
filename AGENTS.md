@@ -80,9 +80,14 @@ tests/            mirrors src/ layout; fixtures/ holds SYNTHETIC samples only
 - **Dates** are `datetime.date`, America/Toronto assumed unless the source says otherwise.
 - **Dedup:** every transaction gets a deterministic SHA-256 `transaction_hash`;
   inserts are `ON CONFLICT DO NOTHING`. Re-importing a statement is a no-op.
-- **One parser per issuer**, each implementing the `StatementParser` protocol
-  (`can_parse(doc) -> bool`, `parse(doc) -> ParsedStatement`). Adding an issuer
-  must not require editing another issuer's parser.
+- **One parser per issuer format**, each implementing the `StatementParser`
+  protocol (`can_parse(doc) -> bool`, `parse(doc) -> ParsedStatement`) over a
+  `SourceDocument` (`ingest/document.py`): PDFs arrive as page text, exports
+  (XLS/XLSX/CSV) as rows. Adding an issuer must not require editing another
+  issuer's parser.
+- **Parsers reconcile.** Where a statement prints totals (previous/new
+  balance, charges, payments), the parser checks its transactions sum to
+  them and raises `ParseError` on mismatch. Never return partial data.
 - **Extraction strategy:** text-layer first (pdfplumber); OCR only when the
   page has no usable text. OCR backend is swappable behind a Protocol.
 - Type hints everywhere; `mypy --strict` clean. No `Any` without a comment saying why.
@@ -157,6 +162,14 @@ test(categorize): cover priority ordering of overlapping rules
   account/card numbers (even partial), or real transactions.
 - `.env` is ignored; `.env.example` documents every variable with dummy values.
 - If you ever see real personal data staged, stop and report it. Do not commit.
+- Real sample statements live in the git-ignored `statements/` folder so
+  parsers can be developed against true layouts. Agents may **read** them
+  to learn structure, but must never copy their contents into code,
+  comments, tests, fixtures, commit messages, or task reports: no real
+  merchant lines, names, addresses, amounts, card/account digits. Fixtures
+  are written from scratch with invented values that mimic the layout.
+- Parser code matches on layout markers (headings, column labels, date/amount
+  patterns) — never on the account holder's name or account numbers.
 
 ---
 
