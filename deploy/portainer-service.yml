@@ -34,6 +34,9 @@
   finagent-api:
     # String form: Portainer's compose validator rejects the mapping form.
     build: https://github.com/david-matevski/personal-financial-agent.git#main
+    # Rebuild on every stack update; otherwise Compose reuses the cached
+    # image and "Update the stack" silently keeps running old code.
+    pull_policy: build
     container_name: finagent-api
     restart: unless-stopped
     environment:
