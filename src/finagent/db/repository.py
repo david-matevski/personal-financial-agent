@@ -7,13 +7,13 @@ happens in one transaction; the caller owns commit.
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from finagent.db.models import Account, Category, Statement
+from finagent.db.models import Account, Category, Statement, Upload
 from finagent.db.models import Transaction as TransactionRow
 from finagent.domain.hashing import transaction_hash
 from finagent.domain.models import Transaction as DomainTransaction
@@ -247,3 +247,117 @@ def list_transactions(
 def list_categories(session: Session) -> list[Category]:
     """List every category."""
     return list(session.execute(select(Category).order_by(Category.id)).scalars().all())
+
+
+# --- Uploads (async upload queue; see finagent.worker) ---
+
+
+def create_upload(
+    session: Session,
+    *,
+    filename: str,
+    file_sha256: str,
+    media_type: str | None,
+    data: bytes,
+) -> Upload:
+    """Queue one uploaded file for extraction.
+
+    A re-upload of bytes already on record (by sha256, in ``statements``) is
+    free: the upload is created already ``DONE`` and linked to the existing
+    statement, with ``data`` never stored, so it never reaches the worker or
+    costs a model call. Otherwise it's queued for the worker to pick up.
+    """
+    existing_statement = get_statement_by_sha256(session, file_sha256)
+    if existing_statement is not None:
+        upload = Upload(
+            filename=filename,
+            file_sha256=file_sha256,
+            media_type=media_type,
+            size_bytes=len(data),
+            data=None,
+            status="DONE",
+            statement_id=existing_statement.id,
+        )
+    else:
+        upload = Upload(
+            filename=filename,
+            file_sha256=file_sha256,
+            media_type=media_type,
+            size_bytes=len(data),
+            data=data,
+            status="QUEUED",
+        )
+    session.add(upload)
+    session.flush()
+    return upload
+
+
+def claim_next_upload(session: Session) -> Upload | None:
+    """Atomically claim the oldest queued upload for processing.
+
+    ``FOR UPDATE SKIP LOCKED`` lets multiple worker processes claim
+    different rows concurrently without blocking on each other.
+    """
+    stmt = (
+        select(Upload)
+        .where(Upload.status == "QUEUED")
+        .order_by(Upload.id)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    upload = session.execute(stmt).scalar_one_or_none()
+    if upload is None:
+        return None
+    upload.status = "PROCESSING"
+    upload.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    return upload
+
+
+def complete_upload(session: Session, upload_id: int, statement_id: int) -> None:
+    """Mark an upload DONE and drop its raw bytes."""
+    upload = session.get(Upload, upload_id)
+    if upload is None:
+        return
+    upload.status = "DONE"
+    upload.statement_id = statement_id
+    upload.data = None
+    upload.updated_at = datetime.now(timezone.utc)
+
+
+def fail_upload(session: Session, upload_id: int, error: str) -> None:
+    """Mark an upload ERROR with a safe message, and drop its raw bytes."""
+    upload = session.get(Upload, upload_id)
+    if upload is None:
+        return
+    upload.status = "ERROR"
+    upload.error = error
+    upload.data = None
+    upload.updated_at = datetime.now(timezone.utc)
+
+
+def requeue_stale_processing(session: Session, older_than: timedelta) -> int:
+    """Requeue PROCESSING uploads whose ``updated_at`` predates the cutoff.
+
+    Recovers uploads orphaned by a worker crash or restart mid-processing.
+    Returns the number of rows requeued.
+    """
+    cutoff = datetime.now(timezone.utc) - older_than
+    stmt = select(Upload).where(Upload.status == "PROCESSING", Upload.updated_at < cutoff)
+    stale = list(session.execute(stmt).scalars().all())
+    for upload in stale:
+        upload.status = "QUEUED"
+        upload.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    return len(stale)
+
+
+def get_upload(session: Session, upload_id: int) -> Upload | None:
+    """Look up an upload by id."""
+    return session.get(Upload, upload_id)
+
+
+def list_uploads(session: Session, *, limit: int = 50, offset: int = 0) -> list[Upload]:
+    """List uploads, newest first."""
+    stmt = select(Upload).order_by(Upload.id.desc()).limit(limit).offset(offset)
+    return list(session.execute(stmt).scalars().all())

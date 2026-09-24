@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 from finagent.api.app import create_app
 from finagent.api.deps import get_db
@@ -85,3 +86,19 @@ def test_non_ascii_bearer_token_is_rejected_not_a_server_error() -> None:
     response = client.get("/accounts", headers={"Authorization": "Bearer sécret".encode()})
 
     assert response.status_code == 401
+
+
+def test_database_outage_returns_503_with_a_safe_message() -> None:
+    client = _client(Settings(_env_file=None, api_token="secret"))  # type: ignore[call-arg]
+    client.app.dependency_overrides[get_db] = _unreachable_db  # type: ignore[attr-defined]
+
+    response = client.get("/accounts", headers={"Authorization": "Bearer secret"})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Database unavailable"}
+
+
+def _unreachable_db() -> Iterator[MagicMock]:
+    session = MagicMock()
+    session.execute.side_effect = OperationalError("SELECT 1", {}, Exception("connection refused"))
+    yield session
