@@ -29,7 +29,9 @@
 # name would make Portainer reject the whole stack update. If Postgres isn't
 # ready yet, `alembic upgrade head` fails and restart: unless-stopped retries.
 #
-# Do NOT add a Cloudflare public hostname for this service yet.
+# Public access: ONLY behind Cloudflare Access. Create the Access application
+# (allow your email only) BEFORE adding the tunnel public hostname
+# (HTTP -> finagent-api:8000), so the dashboard is never exposed unprotected.
 
   finagent-api:
     # String form: Portainer's compose validator rejects the mapping form.
