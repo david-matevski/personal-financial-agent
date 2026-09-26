@@ -5,8 +5,10 @@ import logging
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.responses import Response
@@ -22,6 +24,7 @@ from finagent.api.routes.transactions import router as transactions_router
 from finagent.api.routes.uploads import router as uploads_router
 from finagent.core.config import build_categorizer, build_extractor, get_settings
 from finagent.core.logging import configure_logging
+from finagent.core.static_assets import compute_build_id, rewrite_index_html
 from finagent.db.session import session_scope
 from finagent.worker import UploadWorker, requeue_stale
 
@@ -59,17 +62,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         thread.join(timeout=10)
 
 
-class _RevalidatingStaticFiles(StaticFiles):
-    """Static files that browsers must revalidate on every load.
+class _ImmutableStaticFiles(StaticFiles):
+    """Static files served under a content-versioned URL prefix.
 
-    The dashboard has no build step, so file names don't change between
-    releases; without this, heuristic caching serves stale JS after a
-    redeploy. Revalidation is cheap: unchanged files return 304 via ETag.
+    Because the URL (``/static/{build_id}/...``) changes whenever any file's
+    contents change, these responses can be cached forever: a stale cached
+    copy is simply never requested again once the build id moves on.
     """
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
 
@@ -91,13 +94,34 @@ def create_app() -> FastAPI:
     app.include_router(transactions_router)
     app.include_router(categories_router)
 
-    # Mounted last so API routes above take precedence, and only when the
+    # Registered last so API routes above take precedence, and only when the
     # directory exists: the browser UI (built separately, under
     # web/static/) may not be present yet, e.g. during tests or before the
     # frontend has shipped.
     static_dir = importlib.resources.files("finagent") / "web" / "static"
     if static_dir.is_dir():
-        app.mount("/", _RevalidatingStaticFiles(directory=str(static_dir), html=True), name="web")
+        static_path = Path(str(static_dir))
+        build_id = compute_build_id(static_path)
+        index_html = rewrite_index_html(
+            (static_path / "index.html").read_text(encoding="utf-8"), build_id
+        )
+
+        @app.get("/", include_in_schema=False)
+        @app.get("/index.html", include_in_schema=False)
+        def get_index() -> Response:
+            """Serve the versioned index.html, never cached.
+
+            This is the one URL every deploy keeps stable, so it must always
+            be revalidated: it's the only thing that can tell a client which
+            build id's assets to fetch.
+            """
+            return HTMLResponse(index_html, headers={"Cache-Control": "no-store"})
+
+        app.mount(
+            f"/static/{build_id}",
+            _ImmutableStaticFiles(directory=str(static_path)),
+            name="static-assets",
+        )
 
     return app
 
