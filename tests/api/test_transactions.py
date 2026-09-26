@@ -122,9 +122,21 @@ def test_patch_with_unknown_category_id_is_422(client: TestClient) -> None:
     _upload(client, "a.csv", {})
     transaction_id = client.get("/transactions").json()[0]["id"]
 
-    response = client.patch(f"/transactions/{transaction_id}", json={"category_id": 999999})
+    # In range for the SMALLINT column but not a real category: repository check.
+    response = client.patch(f"/transactions/{transaction_id}", json={"category_id": 32000})
 
     assert response.status_code == 422
+
+
+def test_out_of_range_category_ids_are_422_not_a_database_error(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+
+    patch = client.patch(f"/transactions/{transaction_id}", json={"category_id": 999999})
+    listing = client.get("/transactions", params={"category_id": 999999})
+
+    assert patch.status_code == 422
+    assert listing.status_code == 422
 
 
 def test_patch_with_unknown_transaction_id_is_404(client: TestClient) -> None:

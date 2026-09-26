@@ -8,7 +8,7 @@ rather than relying on implicit Decimal -> str coercion.
 
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class UploadResponse(BaseModel):
@@ -104,10 +104,15 @@ class TransactionOut(BaseModel):
     created_at: datetime
 
 
+# categories.id is SMALLINT: bound ids at the edge so an out-of-range value
+# is a 422, not a database DataError surfacing as a 500.
+CATEGORY_ID_MAX = 32767
+
+
 class CategoryUpdateRequest(BaseModel):
     """Request body for PATCH /transactions/{id}."""
 
-    category_id: int
+    category_id: int = Field(ge=1, le=CATEGORY_ID_MAX)
 
 
 class CategorizeResponse(BaseModel):

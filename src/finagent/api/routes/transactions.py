@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from finagent.api.deps import get_categorizer, get_db, require_auth
 from finagent.api.schemas import (
+    CATEGORY_ID_MAX,
     CategorizeResponse,
     CategoryUpdateRequest,
     TransactionOut,
@@ -32,7 +33,7 @@ def list_transactions_route(
     account_id: int | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
-    category_id: int | None = None,
+    category_id: int | None = Query(default=None, ge=1, le=CATEGORY_ID_MAX),
     needs_review: bool | None = None,
     uncategorized: bool | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
