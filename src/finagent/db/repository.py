@@ -8,8 +8,9 @@ happens in one transaction; the caller owns commit.
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, func, not_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -225,10 +226,19 @@ def list_transactions(
     date_from: date | None = None,
     date_to: date | None = None,
     category_id: int | None = None,
+    needs_review: bool | None = None,
+    review_threshold: Decimal = Decimal("0.7"),
+    uncategorized: bool | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TransactionRow]:
-    """List transactions, newest first, with optional filters."""
+    """List transactions, newest first, with optional filters.
+
+    ``needs_review`` matches rows that are uncategorized, or AI-categorized
+    below ``review_threshold`` (the same rule as ``TransactionOut.needs_review``
+    in the API schema -- kept here so GET /transactions can filter on it
+    server-side instead of the client re-deriving it per row).
+    """
     stmt = select(TransactionRow).order_by(
         TransactionRow.posted_date.desc(), TransactionRow.id.desc()
     )
@@ -240,13 +250,115 @@ def list_transactions(
         stmt = stmt.where(TransactionRow.posted_date <= date_to)
     if category_id is not None:
         stmt = stmt.where(TransactionRow.category_id == category_id)
+    if uncategorized:
+        stmt = stmt.where(TransactionRow.category_id.is_(None))
+    if needs_review is not None:
+        review_condition = or_(
+            TransactionRow.category_id.is_(None),
+            and_(
+                TransactionRow.category_source == "ai",
+                TransactionRow.category_confidence < review_threshold,
+            ),
+        )
+        stmt = stmt.where(review_condition if needs_review else not_(review_condition))
     stmt = stmt.limit(limit).offset(offset)
     return list(session.execute(stmt).scalars().all())
+
+
+def get_transaction(session: Session, transaction_id: int) -> TransactionRow | None:
+    """Look up a transaction by id."""
+    return session.get(TransactionRow, transaction_id)
+
+
+def set_transaction_category_by_user(
+    session: Session, transaction_id: int, category_id: int
+) -> TransactionRow | None:
+    """Apply the owner's own categorization choice, overriding any AI guess.
+
+    Clears ``category_confidence`` (a user choice has no confidence score)
+    and stamps ``categorized_at``; ``category_source`` becomes ``'user'``,
+    which ``categorize_transactions`` never overwrites.
+    """
+    row = session.get(TransactionRow, transaction_id)
+    if row is None:
+        return None
+    row.category_id = category_id
+    row.category_source = "user"
+    row.category_confidence = None
+    row.categorized_at = datetime.now(timezone.utc)
+    session.flush()
+    return row
 
 
 def list_categories(session: Session) -> list[Category]:
     """List every category."""
     return list(session.execute(select(Category).order_by(Category.id)).scalars().all())
+
+
+def get_category(session: Session, category_id: int) -> Category | None:
+    """Look up a category by id."""
+    return session.get(Category, category_id)
+
+
+@dataclass(frozen=True)
+class CategorySummaryRow:
+    """One row of the GET /categories/summary aggregate."""
+
+    category_id: int | None
+    category_name: str | None
+    money_out: Decimal
+    money_in: Decimal
+    count: int
+
+
+def category_summary(
+    session: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    account_id: int | None = None,
+) -> list[CategorySummaryRow]:
+    """Sum transactions by category (NULL = uncategorized), ordered by money_out desc.
+
+    ``money_out`` sums positive amounts (AGENTS.md sign convention: positive
+    = money out); ``money_in`` sums the absolute value of negative amounts.
+    """
+    money_out_expr = func.coalesce(
+        func.sum(case((TransactionRow.amount > 0, TransactionRow.amount), else_=0)), 0
+    )
+    money_in_expr = func.coalesce(
+        func.sum(case((TransactionRow.amount < 0, -TransactionRow.amount), else_=0)), 0
+    )
+    stmt = (
+        select(
+            TransactionRow.category_id,
+            Category.name.label("category_name"),
+            money_out_expr.label("money_out"),
+            money_in_expr.label("money_in"),
+            func.count().label("count"),
+        )
+        .outerjoin(Category, TransactionRow.category_id == Category.id)
+        .group_by(TransactionRow.category_id, Category.name)
+        .order_by(money_out_expr.desc())
+    )
+    if date_from is not None:
+        stmt = stmt.where(TransactionRow.posted_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(TransactionRow.posted_date <= date_to)
+    if account_id is not None:
+        stmt = stmt.where(TransactionRow.account_id == account_id)
+
+    rows = session.execute(stmt).mappings().all()
+    return [
+        CategorySummaryRow(
+            category_id=row["category_id"],
+            category_name=row["category_name"],
+            money_out=row["money_out"],
+            money_in=row["money_in"],
+            count=row["count"],
+        )
+        for row in rows
+    ]
 
 
 # --- Uploads (async upload queue; see finagent.worker) ---
@@ -350,6 +462,16 @@ def requeue_stale_processing(session: Session, older_than: timedelta) -> int:
         upload.updated_at = datetime.now(timezone.utc)
     session.flush()
     return len(stale)
+
+
+def list_uncategorized_transaction_ids_for_statement(
+    session: Session, statement_id: int
+) -> list[int]:
+    """The ids of one statement's freshly inserted, not-yet-categorized transactions."""
+    stmt = select(TransactionRow.id).where(
+        TransactionRow.statement_id == statement_id, TransactionRow.category_id.is_(None)
+    )
+    return list(session.execute(stmt).scalars().all())
 
 
 def get_upload(session: Session, upload_id: int) -> Upload | None:

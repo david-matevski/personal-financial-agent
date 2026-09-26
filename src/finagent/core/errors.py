@@ -15,3 +15,7 @@ class ParseError(FinAgentError):
 
 class ExtractionError(FinAgentError):
     """Raised when text/data extraction from a source document fails."""
+
+
+class CategorizationError(FinAgentError):
+    """Raised when AI transaction categorization fails."""

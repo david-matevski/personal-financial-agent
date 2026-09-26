@@ -97,8 +97,23 @@ class TransactionOut(BaseModel):
     currency: str
     running_balance: str | None
     category_id: int | None
+    category_name: str | None
     category_source: str | None
+    category_confidence: str | None
+    needs_review: bool
     created_at: datetime
+
+
+class CategoryUpdateRequest(BaseModel):
+    """Request body for PATCH /transactions/{id}."""
+
+    category_id: int
+
+
+class CategorizeResponse(BaseModel):
+    """Response body for POST /transactions/categorize."""
+
+    categorized: int
 
 
 class CategoryOut(BaseModel):
@@ -107,4 +122,15 @@ class CategoryOut(BaseModel):
     id: int
     name: str
     parent_id: int | None
+    description: str | None
     created_at: datetime
+
+
+class CategorySummaryOut(BaseModel):
+    """One row of GET /categories/summary."""
+
+    category_id: int | None
+    category_name: str | None
+    money_out: str
+    money_in: str
+    count: int

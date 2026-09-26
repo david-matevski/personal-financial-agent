@@ -133,38 +133,12 @@ class Category(Base):
     parent_id: Mapped[int | None] = mapped_column(
         SmallInteger, ForeignKey("categories.id"), nullable=True
     )
+    description: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
 
-    rules: Mapped[list["CategoryRule"]] = relationship(back_populates="category")
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="category")
-
-
-class CategoryRule(Base):
-    """A pattern -> category mapping used by the (later) categorization engine."""
-
-    __tablename__ = "category_rules"
-    __table_args__ = (
-        CheckConstraint(
-            "created_by IN ('seed', 'user', 'ai')", name="ck_category_rules_created_by"
-        ),
-        Index("ix_category_rules_priority", "priority"),
-    )
-
-    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
-    pattern: Mapped[str] = mapped_column(TEXT, nullable=False, unique=True)
-    category_id: Mapped[int] = mapped_column(
-        SmallInteger, ForeignKey("categories.id"), nullable=False
-    )
-    priority: Mapped[int] = mapped_column(nullable=False, server_default="100")
-    created_by: Mapped[str] = mapped_column(TEXT, nullable=False)
-    confidence: Mapped[Decimal | None] = mapped_column(NUMERIC(4, 3), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
-    )
-
-    category: Mapped["Category"] = relationship(back_populates="rules")
 
 
 class Transaction(Base):
@@ -173,7 +147,7 @@ class Transaction(Base):
     __tablename__ = "transactions"
     __table_args__ = (
         CheckConstraint(
-            "category_source IN ('rule', 'ai', 'user')", name="ck_transactions_category_source"
+            "category_source IN ('ai', 'user')", name="ck_transactions_category_source"
         ),
         Index("ix_transactions_account_id_posted_date", "account_id", "posted_date"),
         Index("ix_transactions_posted_date", "posted_date"),
@@ -195,6 +169,8 @@ class Transaction(Base):
         SmallInteger, ForeignKey("categories.id"), nullable=True
     )
     category_source: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    category_confidence: Mapped[Decimal | None] = mapped_column(NUMERIC(4, 3), nullable=True)
+    categorized_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

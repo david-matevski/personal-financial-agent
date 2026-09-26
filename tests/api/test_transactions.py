@@ -1,9 +1,13 @@
 """DB-backed tests for GET /transactions and GET /accounts (skip if no Postgres)."""
 
+from decimal import Decimal
+
 from fastapi.testclient import TestClient
 
-from finagent.api.deps import get_extractor
+from finagent.api.deps import get_categorizer, get_extractor
+from finagent.core.errors import CategorizationError
 from tests.api.helpers import FakeExtractor, make_extraction
+from tests.categorize.helpers import FakeCategorizer
 
 
 def _upload(
@@ -97,3 +101,100 @@ def test_transactions_limit_over_1000_is_rejected(client: TestClient) -> None:
     response = client.get("/transactions", params={"limit": 1001})
 
     assert response.status_code == 422
+
+
+def test_patch_sets_user_category_source(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+    category_id = client.get("/categories").json()[0]["id"]
+
+    response = client.patch(f"/transactions/{transaction_id}", json={"category_id": category_id})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["category_id"] == category_id
+    assert body["category_source"] == "user"
+    assert body["category_confidence"] is None
+    assert body["needs_review"] is False
+
+
+def test_patch_with_unknown_category_id_is_422(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+
+    response = client.patch(f"/transactions/{transaction_id}", json={"category_id": 999999})
+
+    assert response.status_code == 422
+
+
+def test_patch_with_unknown_transaction_id_is_404(client: TestClient) -> None:
+    category_id = client.get("/categories").json()[0]["id"]
+
+    response = client.patch("/transactions/999999", json={"category_id": category_id})
+
+    assert response.status_code == 404
+
+
+def test_needs_review_true_for_uncategorized_and_low_confidence_ai(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+    category_id = client.get("/categories").json()[0]["id"]
+
+    # Uncategorized -> needs_review.
+    body = client.get("/transactions").json()[0]
+    assert body["needs_review"] is True
+
+    # AI-categorized below the default threshold (0.7) -> needs_review.
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer(
+        confidence=Decimal("0.5")
+    )
+    categorize_response = client.post("/transactions/categorize")
+    assert categorize_response.status_code == 200, categorize_response.text
+    body = client.get("/transactions").json()[0]
+    assert body["category_source"] == "ai"
+    assert body["needs_review"] is True
+
+    # A user override always clears needs_review.
+    client.patch(f"/transactions/{transaction_id}", json={"category_id": category_id})
+    body = client.get("/transactions").json()[0]
+    assert body["needs_review"] is False
+
+
+def test_needs_review_filter(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+
+    response = client.get("/transactions", params={"needs_review": True})
+    assert len(response.json()) == 1
+
+    response = client.get("/transactions", params={"needs_review": False})
+    assert len(response.json()) == 0
+
+
+def test_uncategorized_filter(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+
+    response = client.get("/transactions", params={"uncategorized": True})
+    assert len(response.json()) == 1
+
+
+def test_categorize_endpoint_categorizes_uncategorized_transactions(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer()
+
+    response = client.post("/transactions/categorize")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"categorized": 1}
+
+
+def test_categorize_endpoint_maps_categorization_error_to_502(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+
+    def _raise() -> FakeCategorizer:
+        raise CategorizationError("boom")
+
+    client.app.dependency_overrides[get_categorizer] = _raise
+
+    response = client.post("/transactions/categorize")
+
+    assert response.status_code == 502
