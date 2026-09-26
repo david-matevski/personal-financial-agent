@@ -126,8 +126,12 @@ export function updateTransactionCategory(id, categoryId) {
   });
 }
 
-export function categorizeNow() {
-  return request("/transactions/categorize", { method: "POST" });
+export function categorizeNow({ include_ai, after_id } = {}) {
+  const params = new URLSearchParams();
+  if (include_ai) params.set("include_ai", "true");
+  if (after_id !== undefined && after_id !== null) params.set("after_id", after_id);
+  const qs = params.toString();
+  return request(`/transactions/categorize${qs ? `?${qs}` : ""}`, { method: "POST" });
 }
 
 export function getCategorySummary(filters = {}) {
