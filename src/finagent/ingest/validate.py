@@ -53,8 +53,11 @@ def validate(extraction: StatementExtraction, parsed: ParsedStatement) -> Valida
     Every reconciliation check that has data to check must pass for
     ``VERIFIED``; any failing check makes the whole result ``FAILED``. If no
     printed totals are available at all, the result is ``UNVERIFIED`` (never
-    ``VERIFIED`` -- AGENTS.md §3). Date-range, decimal-precision, and
-    non-empty checks always run, regardless of whether totals were printed.
+    ``VERIFIED`` -- AGENTS.md §3). Decimal-precision and non-empty checks
+    always run, regardless of whether totals were printed. The date-window
+    check is skipped when ``parsed.period_derived`` is True: a period
+    derived from the transactions' own min/max posted date would trivially
+    pass against those same transactions.
     """
     problems: list[str] = []
     # Benign observations (e.g. a printed marker overriding the model's
@@ -109,7 +112,7 @@ def validate(extraction: StatementExtraction, parsed: ParsedStatement) -> Valida
 
     lower_bound = (
         parsed.period_start - timedelta(days=_PERIOD_LOOKBACK_DAYS)
-        if parsed.period_start is not None
+        if parsed.period_start is not None and not parsed.period_derived
         else None
     )
     for tx in parsed.transactions:

@@ -9,6 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     ForeignKey,
@@ -77,6 +78,8 @@ class Statement(Base):
     extraction: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     model: Mapped[str] = mapped_column(TEXT, nullable=False)
     transactions_inserted: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    transactions_skipped: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    period_derived: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
@@ -152,6 +155,7 @@ class Transaction(Base):
         Index("ix_transactions_account_id_posted_date", "account_id", "posted_date"),
         Index("ix_transactions_posted_date", "posted_date"),
         Index("ix_transactions_category_id", "category_id"),
+        Index("ix_transactions_possible_duplicate_of", "possible_duplicate_of"),
     )
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
@@ -171,6 +175,13 @@ class Transaction(Base):
     category_source: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     category_confidence: Mapped[Decimal | None] = mapped_column(NUMERIC(4, 3), nullable=True)
     categorized_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    possible_duplicate_of: Mapped[int | None] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True
+    )
+    duplicate_reviewed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    removed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
@@ -178,3 +189,6 @@ class Transaction(Base):
     account: Mapped["Account"] = relationship(back_populates="transactions")
     statement: Mapped["Statement"] = relationship(back_populates="transactions")
     category: Mapped["Category | None"] = relationship(back_populates="transactions")
+    duplicate_candidate: Mapped["Transaction | None"] = relationship(
+        remote_side=[id], foreign_keys=[possible_duplicate_of]
+    )

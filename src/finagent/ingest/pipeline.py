@@ -10,12 +10,13 @@ as an upload error with nothing recorded at all.
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from finagent.core.errors import ParseError
-from finagent.domain.models import AccountType, ParsedStatement
+from finagent.domain.models import AccountType, KnownAccount, ParsedStatement
 from finagent.ingest.extract.base import StatementExtractor
 from finagent.ingest.extract.schema import StatementExtraction
 from finagent.ingest.loaders import load_document
@@ -50,7 +51,10 @@ class ExtractionResult:
 
 
 def extract_statement(
-    filename: str, data: bytes, extractor: StatementExtractor
+    filename: str,
+    data: bytes,
+    extractor: StatementExtractor,
+    known_accounts: Sequence[KnownAccount] = (),
 ) -> ExtractionResult:
     """Run one statement through load -> extract -> normalize -> validate.
 
@@ -60,11 +64,13 @@ def extract_statement(
     request to re-transcribe. A ``FAILED`` result with no numeric
     discrepancy and no normalization error (e.g. zero transactions, or
     dates outside the statement period) is not retried, since there is
-    nothing concrete to feed back to the model.
+    nothing concrete to feed back to the model. ``known_accounts`` (see
+    ``StatementExtractor.extract``) is passed through unchanged on both
+    attempts.
     """
     doc = load_document(filename, data)
 
-    extraction = extractor.extract(doc)
+    extraction = extractor.extract(doc, known_accounts=known_accounts)
     statement, result = _normalize_and_validate(extraction)
     attempts = 1
 
@@ -76,7 +82,7 @@ def extract_statement(
             if statement is None
             else _retry_feedback(statement, result.discrepancy)  # type: ignore[arg-type]
         )
-        extraction = extractor.extract(doc, feedback=feedback)
+        extraction = extractor.extract(doc, feedback=feedback, known_accounts=known_accounts)
         statement, result = _normalize_and_validate(extraction)
         attempts = 2
 

@@ -25,12 +25,14 @@ costs 1.25x.
 
 import base64
 import logging
+from collections.abc import Sequence
 from typing import Any, cast
 
 import anthropic
 from anthropic.types.beta import BetaMessageParam, BetaOutputConfigParam
 
 from finagent.core.errors import ExtractionError
+from finagent.domain.models import KnownAccount
 from finagent.ingest.document import DocumentKind, SourceDocument
 from finagent.ingest.extract.prompt import SYSTEM_PROMPT
 from finagent.ingest.extract.schema import StatementExtraction
@@ -57,16 +59,25 @@ class AnthropicStatementExtractor:
         self._model = model
         self._effort = effort
 
-    def extract(self, doc: SourceDocument, feedback: str | None = None) -> StatementExtraction:
+    def extract(
+        self,
+        doc: SourceDocument,
+        feedback: str | None = None,
+        known_accounts: Sequence[KnownAccount] = (),
+    ) -> StatementExtraction:
         """Extract ``doc`` into a ``StatementExtraction``.
 
         On a retry, ``feedback`` (a description of the validation
         discrepancy from the previous attempt) is appended to the request
         as an extra instruction, asking for a corrected, complete
         extraction in one fresh call -- there is no need to replay the
-        prior (invalid) answer.
+        prior (invalid) answer. ``known_accounts`` is listed in the user
+        message only (never the system prompt), so the static system prompt
+        keeps its prompt-cache prefix across calls with different accounts.
         """
         instruction = _EXTRACT_INSTRUCTION.format(filename=doc.filename)
+        if known_accounts:
+            instruction += f"\n\nKnown accounts on record:\n{_known_accounts_block(known_accounts)}"
         if feedback:
             instruction += (
                 f"\n\nYour previous extraction of this statement did not reconcile: {feedback}"
@@ -107,6 +118,15 @@ class AnthropicStatementExtractor:
             raise ExtractionError(f"Extraction of {doc.filename} returned no structured output")
 
         return message.parsed_output
+
+
+def _known_accounts_block(known_accounts: Sequence[KnownAccount]) -> str:
+    """Render known accounts as one line each, for the user message."""
+    return "\n".join(
+        f"- issuer={ka.issuer}, last4={ka.account_last4}, type={ka.account_type.value}, "
+        f"name={ka.account_name}"
+        for ka in known_accounts
+    )
 
 
 def _document_content(doc: SourceDocument, instruction: str) -> list[dict[str, Any]]:

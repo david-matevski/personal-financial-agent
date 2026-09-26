@@ -27,12 +27,16 @@ def transaction_hash(tx: Transaction) -> str:
     Hash inputs are never free text extracted by the model (AGENTS.md §3):
     descriptions are excluded, since a re-run of the same statement through
     the LLM could transcribe a description slightly differently and break
-    dedup. Debit accounts key on ``running_balance`` (each line has a
-    distinct balance snapshot). Credit accounts have no reliable running
-    balance, so they key on ``row_sequence`` instead, which disambiguates
-    otherwise identical duplicate lines within one statement.
-    ``account_label`` is included so two accounts of the same issuer/type
-    (e.g. two TD Visa cards) never collide.
+    dedup. Debit accounts key on ``running_balance`` when the statement
+    prints one (each line then has a distinct balance snapshot). Credit
+    accounts have no reliable running balance, so they key on
+    ``row_sequence`` instead, which disambiguates otherwise identical
+    duplicate lines within one statement -- and a debit statement that
+    prints no running balance at all falls back to the same ``row_sequence``
+    key, for the same reason (otherwise two identical same-day debit lines
+    would hash identically and one would be silently dropped as a
+    "duplicate"). ``account_label`` is included so two accounts of the same
+    issuer/type (e.g. two TD Visa cards) never collide.
     """
     parts = [
         tx.issuer,
@@ -41,9 +45,8 @@ def transaction_hash(tx: Transaction) -> str:
         tx.posted_date.isoformat(),
         _format_amount(tx.amount),
     ]
-    if tx.account_type is AccountType.DEBIT:
-        balance = "" if tx.running_balance is None else _format_amount(tx.running_balance)
-        parts.append(balance)
+    if tx.account_type is AccountType.DEBIT and tx.running_balance is not None:
+        parts.append(_format_amount(tx.running_balance))
     else:
         parts.append(str(tx.row_sequence))
 

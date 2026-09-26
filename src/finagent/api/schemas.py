@@ -7,6 +7,7 @@ rather than relying on implicit Decimal -> str coercion.
 """
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -23,6 +24,15 @@ class UploadResponse(BaseModel):
     already_imported: bool
 
 
+class OverlapOut(BaseModel):
+    """One other statement whose period overlaps this one, on GET /statements."""
+
+    statement_id: int
+    filename: str
+    period_start: date | None
+    period_end: date | None
+
+
 class StatementSummary(BaseModel):
     """One row of GET /statements, and the base of the detail response."""
 
@@ -36,12 +46,15 @@ class StatementSummary(BaseModel):
     problems: list[str]
     period_start: date | None
     period_end: date | None
+    period_derived: bool
     opening_balance: str | None
     closing_balance: str | None
     total_money_out: str | None
     total_money_in: str | None
     model: str
     transactions_inserted: int
+    transactions_skipped: int
+    overlaps: list[OverlapOut]
     created_at: datetime
 
 
@@ -67,6 +80,7 @@ class UploadOut(BaseModel):
     statement_id: int | None
     statement_status: str | None
     transactions_inserted: int | None
+    transactions_skipped: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -82,6 +96,16 @@ class AccountOut(BaseModel):
     currency: str
     label: str
     created_at: datetime
+
+
+class DuplicateCandidateOut(BaseModel):
+    """The existing transaction a flagged row might duplicate."""
+
+    id: int
+    posted_date: date
+    description: str
+    amount: str
+    statement_id: int
 
 
 class TransactionOut(BaseModel):
@@ -101,7 +125,16 @@ class TransactionOut(BaseModel):
     category_source: str | None
     category_confidence: str | None
     needs_review: bool
+    possible_duplicate_of: int | None
+    duplicate_candidate: DuplicateCandidateOut | None
+    removed: bool
     created_at: datetime
+
+
+class DuplicateActionRequest(BaseModel):
+    """Request body for POST /transactions/{id}/duplicate."""
+
+    action: Literal["keep_both", "remove", "restore"]
 
 
 # categories.id is SMALLINT: bound ids at the edge so an out-of-range value

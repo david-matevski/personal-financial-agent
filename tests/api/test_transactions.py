@@ -389,6 +389,130 @@ def test_confirmed_row_is_excluded_from_include_ai_recategorization(
     assert row["category_source"] == "user"
 
 
+def _near_duplicate_setup(client: TestClient) -> tuple[int, int]:
+    """Two overlapping statements with the same purchase, reworded/date-shifted.
+
+    Returns (original_id, duplicate_id).
+    """
+    _upload(client, "jan.csv", {})  # default: 2026-01-05, "Fictional Coffee Co", 5.00
+    _upload(
+        client,
+        "feb.csv",
+        {
+            "period_start": "2026-01-01",
+            "period_end": "2026-02-28",
+            "closing_balance": "108.00",
+            "transactions": [
+                {
+                    "posted_date": "2026-01-07",
+                    "description": "COFFEE CO TORONTO",
+                    "amount": "5.00",
+                    "direction": "OUT",
+                },
+                {
+                    "posted_date": "2026-02-01",
+                    "description": "Fictional Streaming Co",
+                    "amount": "3.00",
+                    "direction": "OUT",
+                },
+            ],
+        },
+    )
+    rows = client.get("/transactions", params={"limit": 100}).json()
+    original = next(r for r in rows if r["description"] == "Fictional Coffee Co")
+    duplicate = next(r for r in rows if r["description"] == "COFFEE CO TORONTO")
+    return original["id"], duplicate["id"]
+
+
+def test_transaction_out_exposes_duplicate_fields_when_flagged(client: TestClient) -> None:
+    original_id, duplicate_id = _near_duplicate_setup(client)
+
+    rows = client.get("/transactions", params={"limit": 100}).json()
+    duplicate_row = next(r for r in rows if r["id"] == duplicate_id)
+    original_row = next(r for r in rows if r["id"] == original_id)
+
+    assert duplicate_row["possible_duplicate_of"] == original_id
+    assert duplicate_row["duplicate_candidate"]["id"] == original_id
+    assert duplicate_row["duplicate_candidate"]["description"] == "Fictional Coffee Co"
+    assert duplicate_row["removed"] is False
+    assert original_row["possible_duplicate_of"] is None
+    assert original_row["duplicate_candidate"] is None
+
+
+def test_possible_duplicates_filter(client: TestClient) -> None:
+    _, duplicate_id = _near_duplicate_setup(client)
+
+    response = client.get("/transactions", params={"possible_duplicates": "true"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [r["id"] for r in body] == [duplicate_id]
+
+
+def test_duplicate_action_keep_both(client: TestClient) -> None:
+    _, duplicate_id = _near_duplicate_setup(client)
+
+    response = client.post(f"/transactions/{duplicate_id}/duplicate", json={"action": "keep_both"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["possible_duplicate_of"] is None
+    assert client.get("/transactions", params={"possible_duplicates": "true"}).json() == []
+
+
+def test_duplicate_action_remove_hides_from_list_and_summary(client: TestClient) -> None:
+    original_id, duplicate_id = _near_duplicate_setup(client)
+    before_summary = client.get("/categories/summary").json()
+    before_count = sum(row["count"] for row in before_summary)
+
+    response = client.post(f"/transactions/{duplicate_id}/duplicate", json={"action": "remove"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["removed"] is True
+
+    visible_ids = [r["id"] for r in client.get("/transactions", params={"limit": 100}).json()]
+    assert duplicate_id not in visible_ids
+    assert original_id in visible_ids
+
+    after_summary = client.get("/categories/summary").json()
+    after_count = sum(row["count"] for row in after_summary)
+    assert after_count == before_count - 1
+
+    with_removed_ids = [
+        r["id"]
+        for r in client.get(
+            "/transactions", params={"limit": 100, "include_removed": "true"}
+        ).json()
+    ]
+    assert duplicate_id in with_removed_ids
+
+
+def test_duplicate_action_restore(client: TestClient) -> None:
+    _, duplicate_id = _near_duplicate_setup(client)
+    client.post(f"/transactions/{duplicate_id}/duplicate", json={"action": "remove"})
+
+    response = client.post(f"/transactions/{duplicate_id}/duplicate", json={"action": "restore"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["removed"] is False
+    visible_ids = [r["id"] for r in client.get("/transactions", params={"limit": 100}).json()]
+    assert duplicate_id in visible_ids
+
+
+def test_duplicate_action_unknown_transaction_is_404(client: TestClient) -> None:
+    response = client.post("/transactions/999999/duplicate", json={"action": "keep_both"})
+
+    assert response.status_code == 404
+
+
+def test_duplicate_action_unknown_action_is_422(client: TestClient) -> None:
+    _, duplicate_id = _near_duplicate_setup(client)
+
+    response = client.post(f"/transactions/{duplicate_id}/duplicate", json={"action": "bogus"})
+
+    assert response.status_code == 422
+
+
 def test_categorize_endpoint_maps_categorization_error_to_502(client: TestClient) -> None:
     _upload(client, "a.csv", {})
 

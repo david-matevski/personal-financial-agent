@@ -1,7 +1,9 @@
 """Tests for finagent.ingest.pipeline: load -> extract -> normalize -> validate, with retry."""
 
+from collections.abc import Sequence
 from decimal import Decimal
 
+from finagent.domain.models import AccountType, KnownAccount
 from finagent.ingest.document import SourceDocument
 from finagent.ingest.extract.schema import StatementExtraction
 from finagent.ingest.pipeline import extract_statement
@@ -16,9 +18,16 @@ class FakeExtractor:
     def __init__(self, results: list[StatementExtraction]) -> None:
         self._results = results
         self.feedbacks: list[str | None] = []
+        self.known_accounts_calls: list[Sequence[KnownAccount]] = []
 
-    def extract(self, doc: SourceDocument, feedback: str | None = None) -> StatementExtraction:
+    def extract(
+        self,
+        doc: SourceDocument,
+        feedback: str | None = None,
+        known_accounts: Sequence[KnownAccount] = (),
+    ) -> StatementExtraction:
         self.feedbacks.append(feedback)
+        self.known_accounts_calls.append(known_accounts)
         return self._results[len(self.feedbacks) - 1]
 
 
@@ -46,6 +55,22 @@ def _extraction(**overrides: object) -> StatementExtraction:
     }
     defaults.update(overrides)
     return StatementExtraction.model_validate(defaults)
+
+
+def test_known_accounts_are_passed_through_to_the_extractor() -> None:
+    known = [
+        KnownAccount(
+            issuer="TD",
+            account_last4="1234",
+            account_type=AccountType.CREDIT,
+            account_name="TD Visa",
+        )
+    ]
+    extractor = FakeExtractor([_extraction()])
+
+    extract_statement("statement.csv", _CSV_BYTES, extractor, known_accounts=known)
+
+    assert extractor.known_accounts_calls == [known]
 
 
 def test_first_attempt_verified_needs_no_retry() -> None:

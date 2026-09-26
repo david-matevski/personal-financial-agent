@@ -118,12 +118,15 @@ def _apply_ai_decision(
 
 
 def _pool_conditions(*, include_ai: bool) -> list[ColumnElement[bool]]:
-    """The categorization pool: never user-set, and uncategorized unless include_ai."""
+    """The categorization pool: never user-set, never removed, and
+    uncategorized unless include_ai.
+    """
     conditions: list[ColumnElement[bool]] = [
         or_(
             TransactionRow.category_source.is_(None),
             TransactionRow.category_source != "user",
-        )
+        ),
+        TransactionRow.removed_at.is_(None),
     ]
     if not include_ai:
         conditions.append(TransactionRow.category_id.is_(None))

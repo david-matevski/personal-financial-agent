@@ -5,7 +5,7 @@ doesn't need a real 20MB payload. Both checks happen before the sha256
 lookup or the extractor is touched, so no database is needed here either.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from finagent.api.app import create_app
 from finagent.api.deps import get_extractor
 from finagent.core.config import Settings, get_settings
+from finagent.domain.models import KnownAccount
 from finagent.ingest.document import SourceDocument
 from finagent.ingest.extract.schema import StatementExtraction
 
@@ -22,7 +23,12 @@ _MAX_UPLOAD_BYTES = 16
 class _UnusedExtractor:
     """Fails the test loudly if extraction is ever reached."""
 
-    def extract(self, doc: SourceDocument, feedback: str | None = None) -> StatementExtraction:
+    def extract(
+        self,
+        doc: SourceDocument,
+        feedback: str | None = None,
+        known_accounts: Sequence[KnownAccount] = (),
+    ) -> StatementExtraction:
         raise AssertionError("extractor should not be called for a rejected upload")
 
 
