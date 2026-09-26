@@ -18,7 +18,12 @@ from finagent.db.models import Account, Category, Statement, Upload
 from finagent.db.models import Transaction as TransactionRow
 from finagent.domain.hashing import transaction_hash
 from finagent.domain.models import Transaction as DomainTransaction
-from finagent.ingest.normalize import normalize_issuer, normalize_last4, parse_optional_amount
+from finagent.ingest.normalize import (
+    interpret_balance,
+    interpret_total,
+    normalize_issuer,
+    normalize_last4,
+)
 from finagent.ingest.pipeline import ExtractionResult
 from finagent.ingest.validate import ValidationStatus
 
@@ -91,10 +96,10 @@ def save_extraction(
         status=result.status.value,
         attempts=result.attempts,
         problems=list(result.problems),
-        opening_balance=parse_optional_amount(extraction.opening_balance),
-        closing_balance=parse_optional_amount(extraction.closing_balance),
-        total_money_out=parse_optional_amount(extraction.total_money_out),
-        total_money_in=parse_optional_amount(extraction.total_money_in),
+        opening_balance=interpret_balance(extraction.opening_balance, statement.account_type),
+        closing_balance=interpret_balance(extraction.closing_balance, statement.account_type),
+        total_money_out=interpret_total(extraction.total_money_out),
+        total_money_in=interpret_total(extraction.total_money_in),
         extraction=extraction_json,
         model=model,
         transactions_inserted=0,

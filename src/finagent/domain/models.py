@@ -81,3 +81,10 @@ class ParsedStatement(BaseModel):
     period_start: date | None = None
     period_end: date | None = None
     transactions: tuple[Transaction, ...] = ()
+    notes: tuple[str, ...] = ()
+    """Benign, non-failing observations from normalization (AGENTS.md task
+    spec): e.g. a printed CR/DR marker overriding the model's own direction
+    reading. Never affects VERIFIED/UNVERIFIED/FAILED status by itself --
+    ``validate.py`` folds these into ``ValidationResult.problems`` purely
+    for visibility.
+    """

@@ -172,3 +172,54 @@ def test_problems_never_contain_descriptions() -> None:
 
     for problem in result.problems:
         assert "Totally Secret Merchant Name" not in problem
+
+
+def test_debit_cr_suffixed_balances_reconcile_as_verified() -> None:
+    """A DEBIT (bank) statement printing both balances with a "CR" suffix --
+    the common "in credit" confirmation for a normal positive balance --
+    must reconcile normally, not be misread as an overdraft/FAILED.
+    """
+    extraction = _extraction(
+        account_type="DEBIT", opening_balance="100.00 CR", closing_balance="105.00 CR"
+    )
+    tx = _tx(account_type=AccountType.DEBIT, amount=Decimal("-5.00"))
+    statement = _statement((tx,), account_type=AccountType.DEBIT)
+
+    result = validate(extraction, statement)
+
+    assert result.status is ValidationStatus.VERIFIED
+
+
+def test_debit_overdraft_reconciles_with_negative_closing_balance() -> None:
+    # Opening 100.00 (healthy), closing overdrawn by 50.00 (DR marker) ->
+    # a net swing of 150.00 money out. The DEBIT reconcile formula
+    # (signed sum == -(closing - opening)) must still hold with a
+    # negative, marker-derived closing balance.
+    extraction = _extraction(
+        account_type="DEBIT", opening_balance="100.00", closing_balance="50.00DR"
+    )
+    tx = _tx(account_type=AccountType.DEBIT, amount=Decimal("150.00"))
+    statement = _statement((tx,), account_type=AccountType.DEBIT)
+
+    result = validate(extraction, statement)
+
+    assert result.status is ValidationStatus.VERIFIED
+
+
+def test_notes_from_parsed_statement_surface_in_problems_without_failing() -> None:
+    extraction = _extraction(opening_balance="100.00", closing_balance="105.00")
+    statement = ParsedStatement(
+        issuer="TD",
+        account_name="TD Rewards Visa",
+        account_label="TD ****1234",
+        account_type=AccountType.CREDIT,
+        period_start=date(2026, 1, 1),
+        period_end=date(2026, 1, 31),
+        transactions=(_tx(amount=Decimal("5.00")),),
+        notes=("direction corrected from printed marker on 1 transaction",),
+    )
+
+    result = validate(extraction, statement)
+
+    assert result.status is ValidationStatus.VERIFIED
+    assert "direction corrected from printed marker on 1 transaction" in result.problems

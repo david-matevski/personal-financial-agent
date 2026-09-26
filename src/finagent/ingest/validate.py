@@ -13,7 +13,7 @@ from enum import Enum
 
 from finagent.domain.models import AccountType, ParsedStatement, Transaction
 from finagent.ingest.extract.schema import StatementExtraction
-from finagent.ingest.normalize import parse_optional_amount
+from finagent.ingest.normalize import interpret_balance, interpret_total
 
 _PERIOD_LOOKBACK_DAYS = 45
 
@@ -57,11 +57,15 @@ def validate(extraction: StatementExtraction, parsed: ParsedStatement) -> Valida
     non-empty checks always run, regardless of whether totals were printed.
     """
     problems: list[str] = []
+    # Benign observations (e.g. a printed marker overriding the model's
+    # direction) never drive the status decision below; they're merged into
+    # the returned problems only for visibility.
+    notes: list[str] = list(parsed.notes)
     discrepancy: Decimal | None = None
     reconciled = False
 
-    opening = parse_optional_amount(extraction.opening_balance)
-    closing = parse_optional_amount(extraction.closing_balance)
+    opening = interpret_balance(extraction.opening_balance, parsed.account_type)
+    closing = interpret_balance(extraction.closing_balance, parsed.account_type)
     if opening is not None and closing is not None:
         reconciled = True
         total = _signed_total(parsed.transactions)
@@ -76,8 +80,8 @@ def validate(extraction: StatementExtraction, parsed: ParsedStatement) -> Valida
                 f"balances (difference {diff})"
             )
     else:
-        total_out = parse_optional_amount(extraction.total_money_out)
-        total_in = parse_optional_amount(extraction.total_money_in)
+        total_out = interpret_total(extraction.total_money_out)
+        total_in = interpret_total(extraction.total_money_in)
         if total_out is not None:
             reconciled = True
             actual_out = _out_total(parsed.transactions)
@@ -129,4 +133,6 @@ def validate(extraction: StatementExtraction, parsed: ParsedStatement) -> Valida
     else:
         status = ValidationStatus.UNVERIFIED
 
-    return ValidationResult(status=status, problems=tuple(problems), discrepancy=discrepancy)
+    return ValidationResult(
+        status=status, problems=tuple(problems + notes), discrepancy=discrepancy
+    )
