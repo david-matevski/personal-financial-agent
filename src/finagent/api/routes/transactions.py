@@ -13,7 +13,7 @@ from finagent.api.schemas import (
     TransactionOut,
 )
 from finagent.categorize.base import TransactionCategorizer
-from finagent.categorize.service import categorize_transactions
+from finagent.categorize.service import categorize_transactions, count_pool, load_pool
 from finagent.core.config import Settings, get_settings
 from finagent.db.models import Transaction
 from finagent.db.repository import (
@@ -77,12 +77,38 @@ def update_transaction_category_route(
 
 @router.post("/transactions/categorize", response_model=CategorizeResponse)
 def categorize_transactions_route(
+    include_ai: bool = False,
+    after_id: int | None = Query(default=None, ge=1),
     session: Session = Depends(get_db),
     categorizer: TransactionCategorizer = Depends(get_categorizer),
 ) -> CategorizeResponse:
-    """Run AI categorization synchronously over up to 200 uncategorized transactions."""
-    count = categorize_transactions(session, categorizer, limit=_CATEGORIZE_LIMIT)
-    return CategorizeResponse(categorized=count)
+    """Run AI categorization synchronously over up to 200 rows in the pool.
+
+    By default the pool is uncategorized transactions. With
+    ``include_ai=true`` the pool also includes rows the AI categorized
+    earlier (never rows the owner set), so a category-list change can be
+    reflected in transactions already filed elsewhere. Because
+    already-processed and not-yet-processed rows then look identical, page
+    through the whole pool in ascending id order: pass the previous
+    response's ``last_id`` back as ``after_id`` on the next call, and stop
+    once ``remaining`` is 0. Existing callers that pass neither parameter
+    are unaffected -- the default pool is unchanged and there is nothing to
+    page through.
+    """
+    ids = [
+        row.id
+        for row in load_pool(
+            session, limit=_CATEGORIZE_LIMIT, include_ai=include_ai, after_id=after_id
+        )
+    ]
+    count = (
+        categorize_transactions(session, categorizer, transaction_ids=ids, include_ai=include_ai)
+        if ids
+        else 0
+    )
+    last_id = ids[-1] if ids else after_id
+    remaining = count_pool(session, include_ai=include_ai, after_id=last_id)
+    return CategorizeResponse(categorized=count, remaining=remaining, last_id=last_id)
 
 
 def _to_schema(row: Transaction, settings: Settings) -> TransactionOut:

@@ -13,7 +13,7 @@ from finagent.categorize.base import (
     CategoryExample,
     CategoryOption,
 )
-from finagent.categorize.service import categorize_transactions
+from finagent.categorize.service import categorize_transactions, load_pool
 from finagent.db.models import Account, Category, Statement
 from finagent.db.models import Transaction as TransactionRow
 from tests.categorize.helpers import FakeCategorizer
@@ -307,3 +307,207 @@ def test_owner_correction_during_the_model_call_is_not_overwritten(session: Sess
     assert refreshed is not None
     assert refreshed.category_id == owner_choice
     assert refreshed.category_source == "user"
+
+
+def test_owner_correction_during_the_model_call_is_not_overwritten_with_include_ai(
+    session: Session,
+) -> None:
+    # Same race as above, but the row starts out AI-categorized (only
+    # reachable via include_ai) instead of uncategorized.
+    account = _account(session)
+    statement = _statement(session, sha_suffix="race-ai")
+    categories = _categories(session)
+    original_ai_choice, owner_choice, new_ai_choice = (
+        categories[0].id,
+        categories[1].id,
+        categories[2].id,
+    )
+    row = _transaction(
+        session,
+        account=account,
+        statement=statement,
+        category_id=original_ai_choice,
+        category_source="ai",
+        category_confidence=Decimal("0.5"),
+        categorized_at=datetime.now(timezone.utc),
+    )
+    session.commit()
+
+    def owner_edits_while_model_thinks(
+        items: Sequence[CategorizeItem],
+        options: Sequence[CategoryOption],
+        examples: Sequence[CategoryExample],
+    ) -> list[CategoryDecision]:
+        session.execute(
+            update(TransactionRow)
+            .where(TransactionRow.id == row.id)
+            .values(category_id=owner_choice, category_source="user")
+        )
+        return [
+            CategoryDecision(id=i.id, category_id=new_ai_choice, confidence=Decimal("0.99"))
+            for i in items
+        ]
+
+    updated = categorize_transactions(
+        session,
+        FakeCategorizer(decide=owner_edits_while_model_thinks),
+        include_ai=True,
+    )
+    session.commit()
+
+    assert updated == 0
+    session.expire_all()
+    refreshed = session.get(TransactionRow, row.id)
+    assert refreshed is not None
+    assert refreshed.category_id == owner_choice
+    assert refreshed.category_source == "user"
+
+
+def test_include_ai_recategorizes_ai_rows_but_never_user_rows(session: Session) -> None:
+    account = _account(session)
+    statement = _statement(session, sha_suffix="incl")
+    categories = _categories(session)
+    old_choice, new_choice = categories[0].id, categories[1].id
+
+    ai_row = _transaction(
+        session,
+        account=account,
+        statement=statement,
+        description="Ai Row",
+        category_id=old_choice,
+        category_source="ai",
+        category_confidence=Decimal("0.5"),
+        categorized_at=datetime.now(timezone.utc),
+    )
+    user_row = _transaction(
+        session,
+        account=account,
+        statement=statement,
+        description="User Row",
+        category_id=old_choice,
+        category_source="user",
+        categorized_at=datetime.now(timezone.utc),
+    )
+    uncategorized_row = _transaction(
+        session, account=account, statement=statement, description="Uncategorized Row"
+    )
+    session.commit()
+
+    def _decide(
+        items: Sequence[CategorizeItem],
+        cats: Sequence[CategoryOption],
+        examples: Sequence[CategoryExample],
+    ) -> list[CategoryDecision]:
+        return [
+            CategoryDecision(id=i.id, category_id=new_choice, confidence=Decimal("0.9"))
+            for i in items
+        ]
+
+    updated = categorize_transactions(session, FakeCategorizer(decide=_decide), include_ai=True)
+    session.commit()
+
+    assert updated == 2
+    session.expire_all()
+    assert session.get(TransactionRow, ai_row.id).category_id == new_choice  # type: ignore[union-attr]
+    assert session.get(TransactionRow, ai_row.id).category_source == "ai"  # type: ignore[union-attr]
+    assert session.get(TransactionRow, uncategorized_row.id).category_id == new_choice  # type: ignore[union-attr]
+    # The user row is untouched, categorically excluded from the pool.
+    assert session.get(TransactionRow, user_row.id).category_id == old_choice  # type: ignore[union-attr]
+    assert session.get(TransactionRow, user_row.id).category_source == "user"  # type: ignore[union-attr]
+
+
+def test_default_mode_does_not_touch_ai_rows(session: Session) -> None:
+    account = _account(session)
+    statement = _statement(session, sha_suffix="default")
+    categories = _categories(session)
+    old_choice = categories[0].id
+
+    ai_row = _transaction(
+        session,
+        account=account,
+        statement=statement,
+        description="Ai Row",
+        category_id=old_choice,
+        category_source="ai",
+        category_confidence=Decimal("0.5"),
+        categorized_at=datetime.now(timezone.utc),
+    )
+    uncategorized_row = _transaction(
+        session, account=account, statement=statement, description="Uncategorized Row"
+    )
+    session.commit()
+
+    updated = categorize_transactions(session, FakeCategorizer())
+    session.commit()
+
+    assert updated == 1
+    session.expire_all()
+    assert session.get(TransactionRow, ai_row.id).category_id == old_choice  # type: ignore[union-attr]
+    assert session.get(TransactionRow, uncategorized_row.id).category_id is not None  # type: ignore[union-attr]
+
+
+def test_ai_examples_exclude_rows_being_recategorized_in_this_call(session: Session) -> None:
+    account = _account(session)
+    statement = _statement(session, sha_suffix="excl")
+    categories = _categories(session)
+    grocery = next(c for c in categories if c.name == "Grocery")
+
+    # An AI-categorized row that is itself part of the include_ai pool: its
+    # own (possibly wrong) answer must not be echoed back as an example.
+    target = _transaction(
+        session,
+        account=account,
+        statement=statement,
+        description="Self Referential Row",
+        category_id=grocery.id,
+        category_source="ai",
+        category_confidence=Decimal("0.9"),
+        categorized_at=datetime.now(timezone.utc),
+    )
+    session.commit()
+
+    captured: dict[str, Sequence[CategoryExample]] = {}
+
+    def _decide(
+        items: Sequence[CategorizeItem],
+        cats: Sequence[CategoryOption],
+        examples: Sequence[CategoryExample],
+    ) -> list[CategoryDecision]:
+        captured["examples"] = examples
+        return [
+            CategoryDecision(id=i.id, category_id=cats[0].id, confidence=Decimal("0.5"))
+            for i in items
+        ]
+
+    categorize_transactions(
+        session, FakeCategorizer(decide=_decide), transaction_ids=[target.id], include_ai=True
+    )
+    session.commit()
+
+    assert "Self Referential Row" not in [e.description for e in captured["examples"]]
+
+
+def test_after_id_paging_covers_every_pool_row_exactly_once(session: Session) -> None:
+    account = _account(session)
+    statement = _statement(session, sha_suffix="page")
+    rows = [
+        _transaction(session, account=account, statement=statement, description=f"Page Row {i}")
+        for i in range(5)
+    ]
+    session.commit()
+    categorizer = FakeCategorizer()
+
+    seen_ids: set[int] = set()
+    after_id: int | None = None
+    for _ in range(10):  # safety cap against an infinite loop on a bug
+        page = load_pool(session, limit=2, after_id=after_id)
+        if not page:
+            break
+        ids = [row.id for row in page]
+        assert not seen_ids & set(ids), "a row was returned by more than one page"
+        categorize_transactions(session, categorizer, transaction_ids=ids)
+        session.commit()
+        seen_ids.update(ids)
+        after_id = ids[-1]
+
+    assert seen_ids == {row.id for row in rows}

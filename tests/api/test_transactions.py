@@ -1,10 +1,17 @@
 """DB-backed tests for GET /transactions and GET /accounts (skip if no Postgres)."""
 
+from collections.abc import Sequence
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
 from finagent.api.deps import get_categorizer, get_extractor
+from finagent.categorize.base import (
+    CategorizeItem,
+    CategoryDecision,
+    CategoryExample,
+    CategoryOption,
+)
 from finagent.core.errors import CategorizationError
 from tests.api.helpers import FakeExtractor, make_extraction
 from tests.categorize.helpers import FakeCategorizer
@@ -191,12 +198,115 @@ def test_uncategorized_filter(client: TestClient) -> None:
 
 def test_categorize_endpoint_categorizes_uncategorized_transactions(client: TestClient) -> None:
     _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
     client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer()
 
     response = client.post("/transactions/categorize")
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"categorized": 1}
+    assert response.json() == {"categorized": 1, "remaining": 0, "last_id": transaction_id}
+
+
+def _multi_upload(client: TestClient) -> dict[str, object]:
+    return _upload(
+        client,
+        "multi.csv",
+        {
+            "closing_balance": "113.00",
+            "transactions": [
+                {
+                    "posted_date": "2026-01-05",
+                    "description": "Row A",
+                    "amount": "5.00",
+                    "direction": "OUT",
+                },
+                {
+                    "posted_date": "2026-01-06",
+                    "description": "Row B",
+                    "amount": "8.00",
+                    "direction": "OUT",
+                },
+            ],
+        },
+    )
+
+
+def test_categorize_default_mode_is_unchanged(client: TestClient) -> None:
+    _multi_upload(client)
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer()
+
+    response = client.post("/transactions/categorize")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["categorized"] == 2
+    assert body["remaining"] == 0
+
+
+def test_categorize_include_ai_recategorizes_ai_rows_but_not_user_rows(client: TestClient) -> None:
+    _multi_upload(client)
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer()
+    assert client.post("/transactions/categorize").status_code == 200
+
+    rows = client.get("/transactions").json()
+    row_a = next(r for r in rows if r["description"] == "Row A")
+    row_b = next(r for r in rows if r["description"] == "Row B")
+    categories = client.get("/categories").json()
+    user_category_id = next(c["id"] for c in categories if c["id"] != row_a["category_id"])
+    patch_response = client.patch(
+        f"/transactions/{row_a['id']}", json={"category_id": user_category_id}
+    )
+    assert patch_response.status_code == 200, patch_response.text
+
+    new_ai_category_id = next(
+        c["id"] for c in categories if c["id"] not in (row_a["category_id"], user_category_id)
+    )
+
+    def _decide(
+        items: Sequence[CategorizeItem],
+        cats: Sequence[CategoryOption],
+        examples: Sequence[CategoryExample],
+    ) -> list[CategoryDecision]:
+        return [
+            CategoryDecision(id=item.id, category_id=new_ai_category_id, confidence=Decimal("0.9"))
+            for item in items
+        ]
+
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer(decide=_decide)
+
+    response = client.post("/transactions/categorize", params={"include_ai": "true"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["categorized"] == 1
+    assert body["remaining"] == 0
+
+    updated = client.get("/transactions").json()
+    updated_a = next(r for r in updated if r["id"] == row_a["id"])
+    updated_b = next(r for r in updated if r["id"] == row_b["id"])
+    assert updated_a["category_id"] == user_category_id
+    assert updated_a["category_source"] == "user"
+    assert updated_b["category_id"] == new_ai_category_id
+    assert updated_b["category_source"] == "ai"
+
+
+def test_categorize_after_id_pages_through_the_pool(client: TestClient) -> None:
+    _multi_upload(client)
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer()
+
+    first = client.post("/transactions/categorize", params={"include_ai": "true"})
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["categorized"] == 2
+    assert body["remaining"] == 0
+    assert body["last_id"] is not None
+
+    second = client.post(
+        "/transactions/categorize", params={"include_ai": "true", "after_id": body["last_id"]}
+    )
+
+    assert second.status_code == 200, second.text
+    assert second.json() == {"categorized": 0, "remaining": 0, "last_id": body["last_id"]}
 
 
 def test_categorize_endpoint_maps_categorization_error_to_502(client: TestClient) -> None:

@@ -180,9 +180,9 @@ def test_failed_result_stores_statement_with_no_transactions(session: Session) -
     assert tx_count == 0
 
 
-def test_categories_seed_has_14_rows(session: Session) -> None:
+def test_categories_seed_has_15_rows(session: Session) -> None:
     count = session.execute(select(func.count()).select_from(Category)).scalar_one()
-    assert count == 14
+    assert count == 15
 
 
 def test_reimport_updates_account_name_to_latest(session: Session) -> None:

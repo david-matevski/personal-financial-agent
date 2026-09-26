@@ -33,8 +33,8 @@ def test_downgrade_then_upgrade_roundtrip(db_engine: Engine) -> None:
 
     with db_engine.connect() as conn:
         (count,) = conn.exec_driver_sql("SELECT count(*) FROM categories").fetchone()
-        assert count == 14
+        assert count == 15
         (described,) = conn.exec_driver_sql(
             "SELECT count(*) FROM categories WHERE description IS NOT NULL"
         ).fetchone()
-        assert described == 14
+        assert described == 15

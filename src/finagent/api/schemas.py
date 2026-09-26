@@ -116,9 +116,16 @@ class CategoryUpdateRequest(BaseModel):
 
 
 class CategorizeResponse(BaseModel):
-    """Response body for POST /transactions/categorize."""
+    """Response body for POST /transactions/categorize.
+
+    ``remaining`` is how many pool rows are left after this call; with
+    ``include_ai``, ``last_id`` is the cursor to pass back as ``after_id``
+    to continue paging (``None`` when nothing in the pool was reached).
+    """
 
     categorized: int
+    remaining: int
+    last_id: int | None = None
 
 
 class CategoryOut(BaseModel):
