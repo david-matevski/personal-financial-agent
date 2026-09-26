@@ -20,7 +20,7 @@ from finagent.api.routes.health import router as health_router
 from finagent.api.routes.statements import router as statements_router
 from finagent.api.routes.transactions import router as transactions_router
 from finagent.api.routes.uploads import router as uploads_router
-from finagent.core.config import build_extractor, get_settings
+from finagent.core.config import build_categorizer, build_extractor, get_settings
 from finagent.core.logging import configure_logging
 from finagent.db.session import session_scope
 from finagent.worker import UploadWorker, requeue_stale
@@ -46,6 +46,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         worker = UploadWorker(
             session_scope,
             lambda: build_extractor(settings),
+            lambda: build_categorizer(settings),
             model=settings.extraction_model,
         )
         thread = threading.Thread(target=worker.run, args=(stop_event,), daemon=True)

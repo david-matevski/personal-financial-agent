@@ -16,7 +16,7 @@ Statement (any issuer; PDF / image / CSV / XLS / XLSX)
    └─> extract    : Claude reads the document → strict JSON (no per-issuer parsers)
    └─> validate   : deterministic checks — totals reconcile, dates in period, 2dp
    └─> normalize  : canonical Transaction model (signs, Decimal, dedup hash)
-   └─> categorize : rule-based first, LLM for unmatched merchants
+   └─> categorize : Claude Haiku picks from the category table; owner corrections are fed back as examples
    └─> persist    : PostgreSQL, idempotent (hash-based dedup)
    └─> expose     : REST API (FastAPI)
 ```
@@ -74,7 +74,7 @@ src/finagent/
     extract/      AI extraction behind a StatementExtractor Protocol (Anthropic impl)
     validate.py   reconciliation & sanity checks (pure)
     pipeline.py   load → extract → validate (→ retry) → ParsedStatement
-  categorize/     rule engine, later ML
+  categorize/     AI categorization behind a TransactionCategorizer Protocol (Anthropic impl)
   db/             SQLAlchemy models, session, repositories
 migrations/       Alembic
 tests/            mirrors src/ layout; fixtures/ holds SYNTHETIC samples only
@@ -102,7 +102,13 @@ tests/            mirrors src/ layout; fixtures/ holds SYNTHETIC samples only
   must reconcile to them; one retry with the discrepancy fed back, then the
   statement is marked `FAILED` for review — never silently accepted.
   Statements with no printed totals are marked `UNVERIFIED`, not `VERIFIED`.
-- **LLM access** goes only through the `StatementExtractor` Protocol. Tests
+- **No hand-maintained categorization rules.** Categories are data (the
+  `categories` table); the model picks one per transaction. Owner
+  corrections (`category_source='user'`) are never overwritten and are fed
+  back to the model as preference examples. Low-confidence AI decisions are
+  flagged for review, not silently trusted.
+- **LLM access** goes only through the `StatementExtractor` and
+  `TransactionCategorizer` Protocols. Tests
   use fakes; no test ever calls the real API. Model ID and API key come
   from config.
 - Type hints everywhere; `mypy --strict` clean. No `Any` without a comment saying why.
@@ -167,7 +173,7 @@ Examples:
 ```
 feat(extract): extract statements with Claude structured output
 fix(ingest): treat CR suffix as a credit on CIBC statements
-test(categorize): cover priority ordering of overlapping rules
+test(categorize): never overwrite owner-corrected categories
 ```
 
 ---

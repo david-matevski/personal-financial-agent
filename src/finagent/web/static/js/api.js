@@ -118,3 +118,24 @@ export function listTransactions(filters = {}) {
 export function listCategories() {
   return request("/categories");
 }
+
+export function updateTransactionCategory(id, categoryId) {
+  return request(`/transactions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: { category_id: categoryId },
+  });
+}
+
+export function categorizeNow() {
+  return request("/transactions/categorize", { method: "POST" });
+}
+
+export function getCategorySummary(filters = {}) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, value);
+    }
+  }
+  return request(`/categories/summary?${params.toString()}`);
+}

@@ -1,8 +1,9 @@
-import { el, clear } from "../dom.js";
+import { el, clear, badge } from "../dom.js";
 import { formatDate, formatMoney, parseAmount } from "../format.js";
 import * as api from "../api.js";
 
 const PAGE_SIZE = 100;
+const UNCATEGORIZED_VALUE = "uncategorized";
 
 function accountLabel(accountsById, accountId) {
   const account = accountsById.get(accountId);
@@ -13,6 +14,29 @@ function accountLabel(accountsById, accountId) {
 function matchesSearch(tx, term) {
   if (!term) return true;
   return tx.description.toLowerCase().includes(term.toLowerCase());
+}
+
+function formatConfidence(confidence) {
+  if (confidence == null || confidence === "") return null;
+  const value = Number.parseFloat(confidence);
+  if (Number.isNaN(value)) return confidence;
+  return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 0 }).format(value);
+}
+
+function categorySourceBadge(tx) {
+  if (tx.category_source === "ai") {
+    const pct = formatConfidence(tx.category_confidence);
+    const node = badge("AI", "neutral");
+    if (pct) {
+      node.title = `AI categorized, ${pct} confidence`;
+      node.appendChild(el("span", { class: "visually-hidden", text: ` (${pct} confidence)` }));
+    }
+    return node;
+  }
+  if (tx.category_source === "user") {
+    return badge("You", "neutral");
+  }
+  return null;
 }
 
 function renderTotals(container, rows) {
@@ -37,7 +61,80 @@ function renderTotals(container, rows) {
   container.appendChild(item("Net", `${net < 0 ? "-" : ""}${formatMoney(String(net), currency)}`, ""));
 }
 
-function renderTable(container, rows, accountsById) {
+function buildCategorySelect(tx, categories) {
+  const select = el(
+    "select",
+    { "aria-label": `Category for ${tx.description}` },
+    [
+      el("option", { value: "", text: "Uncategorized" }),
+      ...categories.map((c) => el("option", { value: String(c.id), text: c.name })),
+    ]
+  );
+  select.value = tx.category_id != null ? String(tx.category_id) : "";
+  return select;
+}
+
+function buildRow(tx, accountsById, categories, onCategoryChange) {
+  const value = parseAmount(tx.amount);
+  const isIn = value != null && value < 0;
+  const amountCell = isIn
+    ? el("td", {}, [
+        el("span", { class: "amount-in", text: formatMoney(tx.amount, tx.currency) }),
+        el("span", { class: "money-in-label", text: "In" }),
+      ])
+    : el("td", {}, [el("span", { class: "amount-out", text: formatMoney(tx.amount, tx.currency) })]);
+
+  const select = buildCategorySelect(tx, categories);
+  const savedNote = el("span", { class: "save-note", role: "status" });
+  const sourceBadgeSlot = el("span", { class: "category-badge-slot" });
+  const sourceBadge = categorySourceBadge(tx);
+  if (sourceBadge) sourceBadgeSlot.appendChild(sourceBadge);
+
+  select.addEventListener("change", async () => {
+    const previousValue = tx.category_id != null ? String(tx.category_id) : "";
+    const chosen = select.value;
+    select.disabled = true;
+    savedNote.textContent = "";
+    savedNote.classList.remove("form-error");
+    try {
+      const updated = await api.updateTransactionCategory(tx.id, chosen === "" ? null : Number(chosen));
+      tx.category_id = updated.category_id;
+      tx.category_name = updated.category_name;
+      tx.category_source = "user";
+      tx.category_confidence = updated.category_confidence;
+      tx.needs_review = updated.needs_review;
+      savedNote.textContent = "Saved";
+      clear(sourceBadgeSlot);
+      const newBadge = categorySourceBadge(tx);
+      if (newBadge) sourceBadgeSlot.appendChild(newBadge);
+      onCategoryChange(tx);
+    } catch (err) {
+      select.value = previousValue;
+      savedNote.textContent = err.message || "Could not save.";
+      savedNote.classList.add("form-error");
+    } finally {
+      select.disabled = false;
+    }
+  });
+
+  const categoryCell = el("td", { class: "category-cell" }, [
+    select,
+    el("div", { class: "category-cell__meta" }, [sourceBadgeSlot, savedNote]),
+  ]);
+
+  const reviewCell = el("td", {}, tx.needs_review ? [badge("Review", "warn")] : []);
+
+  return el("tr", {}, [
+    el("td", { text: formatDate(tx.posted_date || tx.transaction_date) }),
+    el("td", { class: "description-cell", text: tx.description }),
+    el("td", { text: accountLabel(accountsById, tx.account_id) }),
+    categoryCell,
+    reviewCell,
+    amountCell,
+  ]);
+}
+
+function renderTable(container, rows, accountsById, categories, onCategoryChange) {
   clear(container);
   if (!rows.length) {
     container.appendChild(el("p", { class: "empty-state", text: "No transactions match these filters." }));
@@ -51,35 +148,22 @@ function renderTable(container, rows, accountsById) {
         el("th", { text: "Date" }),
         el("th", { text: "Description" }),
         el("th", { text: "Account" }),
+        el("th", { text: "Category" }),
+        el("th", { text: "Review" }),
         el("th", { text: "Amount" }),
       ]),
     ])
   );
   const tbody = el("tbody");
   for (const tx of rows) {
-    const value = parseAmount(tx.amount);
-    const isIn = value != null && value < 0;
-    const amountCell = isIn
-      ? el("td", {}, [
-          el("span", { class: "amount-in", text: formatMoney(tx.amount, tx.currency) }),
-          el("span", { class: "money-in-label", text: "In" }),
-        ])
-      : el("td", {}, [el("span", { class: "amount-out", text: formatMoney(tx.amount, tx.currency) })]);
-    tbody.appendChild(
-      el("tr", {}, [
-        el("td", { text: formatDate(tx.posted_date || tx.transaction_date) }),
-        el("td", { class: "description-cell", text: tx.description }),
-        el("td", { text: accountLabel(accountsById, tx.account_id) }),
-        amountCell,
-      ])
-    );
+    tbody.appendChild(buildRow(tx, accountsById, categories, onCategoryChange));
   }
   table.appendChild(tbody);
   wrap.appendChild(table);
   container.appendChild(wrap);
 }
 
-export async function render(root) {
+export async function render(root, { params } = {}) {
   const view = el("div", { class: "view view-transactions" });
   view.appendChild(el("div", { class: "view-heading" }, [el("h1", { text: "Transactions" })]));
   const loadingNote = el("p", { class: "empty-state", text: "Loading transactions…" });
@@ -87,8 +171,9 @@ export async function render(root) {
   root.appendChild(view);
 
   let accounts = [];
+  let categories = [];
   try {
-    accounts = await api.listAccounts();
+    [accounts, categories] = await Promise.all([api.listAccounts(), api.listCategories()]);
   } catch (err) {
     loadingNote.replaceWith(el("p", { class: "form-error", role: "alert", text: err.message }));
     return;
@@ -96,26 +181,57 @@ export async function render(root) {
   loadingNote.remove();
   const accountsById = new Map(accounts.map((a) => [a.id, a]));
 
+  const initialCategoryId = params?.get("category_id") || "";
+  const initialUncategorized = params?.get("uncategorized") === "true";
+  const initialAccountId = params?.get("account_id") || "";
+  const initialDateFrom = params?.get("date_from") || "";
+  const initialDateTo = params?.get("date_to") || "";
+  const initialNeedsReview = params?.get("needs_review") === "true";
+
   const accountSelect = el("select", { id: "filter-account" }, [
     el("option", { value: "", text: "All accounts" }),
     ...accounts.map((a) => el("option", { value: String(a.id), text: a.label || a.account_name || `Account #${a.id}` })),
   ]);
-  const dateFromInput = el("input", { type: "date", id: "filter-date-from" });
-  const dateToInput = el("input", { type: "date", id: "filter-date-to" });
+  accountSelect.value = initialAccountId;
+
+  const categorySelect = el("select", { id: "filter-category" }, [
+    el("option", { value: "", text: "All categories" }),
+    el("option", { value: UNCATEGORIZED_VALUE, text: "Uncategorized" }),
+    ...categories.map((c) => el("option", { value: String(c.id), text: c.name })),
+  ]);
+  categorySelect.value = initialUncategorized ? UNCATEGORIZED_VALUE : initialCategoryId;
+
+  const dateFromInput = el("input", { type: "date", id: "filter-date-from", value: initialDateFrom || undefined });
+  const dateToInput = el("input", { type: "date", id: "filter-date-to", value: initialDateTo || undefined });
   const searchInput = el("input", { type: "search", id: "filter-search", placeholder: "Search description…" });
+  const reviewCheckbox = el("input", { type: "checkbox", id: "filter-needs-review" });
+  reviewCheckbox.checked = initialNeedsReview;
 
   const filters = el("div", { class: "filters card" }, [
     el("div", { class: "field" }, [el("label", { for: "filter-account", text: "Account" }), accountSelect]),
+    el("div", { class: "field" }, [el("label", { for: "filter-category", text: "Category" }), categorySelect]),
     el("div", { class: "field" }, [el("label", { for: "filter-date-from", text: "From" }), dateFromInput]),
     el("div", { class: "field" }, [el("label", { for: "filter-date-to", text: "To" }), dateToInput]),
     el("div", { class: "field" }, [el("label", { for: "filter-search", text: "Search" }), searchInput]),
+    el("div", { class: "field field--checkbox" }, [
+      el("label", { for: "filter-needs-review", class: "checkbox-label" }, [
+        reviewCheckbox,
+        el("span", { text: "Needs review only" }),
+      ]),
+    ]),
   ]);
+
+  const categorizeBtn = el("button", { type: "button", class: "btn btn--primary", text: "Categorize now" });
+  const categorizeStatus = el("p", { class: "empty-state", role: "status" });
+  categorizeStatus.hidden = true;
+  const actionsBar = el("div", { class: "actions-bar" }, [categorizeBtn, categorizeStatus]);
 
   const totalsBar = el("div", { class: "totals-bar" });
   const tableContainer = el("div");
   const loadMoreBtn = el("button", { type: "button", class: "btn", text: "Load more" });
   const statusLine = el("p", { class: "empty-state" });
 
+  view.appendChild(actionsBar);
   view.appendChild(filters);
   view.appendChild(totalsBar);
   view.appendChild(tableContainer);
@@ -128,10 +244,14 @@ export async function render(root) {
   let loading = false;
 
   function currentFilters() {
+    const catValue = categorySelect.value;
     return {
       account_id: accountSelect.value || undefined,
       date_from: dateFromInput.value || undefined,
       date_to: dateToInput.value || undefined,
+      category_id: catValue && catValue !== UNCATEGORIZED_VALUE ? catValue : undefined,
+      uncategorized: catValue === UNCATEGORIZED_VALUE ? "true" : undefined,
+      needs_review: reviewCheckbox.checked ? "true" : undefined,
     };
   }
 
@@ -142,8 +262,12 @@ export async function render(root) {
 
   function redraw() {
     const filtered = applyClientFilters();
-    renderTable(tableContainer, filtered, accountsById);
+    renderTable(tableContainer, filtered, accountsById, categories, () => redrawTotalsOnly());
     renderTotals(totalsBar, filtered);
+  }
+
+  function redrawTotalsOnly() {
+    renderTotals(totalsBar, applyClientFilters());
   }
 
   async function loadPage({ reset }) {
@@ -180,10 +304,31 @@ export async function render(root) {
   }
 
   accountSelect.addEventListener("change", () => loadPage({ reset: true }));
+  categorySelect.addEventListener("change", () => loadPage({ reset: true }));
+  reviewCheckbox.addEventListener("change", () => loadPage({ reset: true }));
   dateFromInput.addEventListener("change", () => loadPage({ reset: true }));
   dateToInput.addEventListener("change", () => loadPage({ reset: true }));
   searchInput.addEventListener("input", () => redraw());
   loadMoreBtn.addEventListener("click", () => loadPage({ reset: false }));
+
+  categorizeBtn.addEventListener("click", async () => {
+    categorizeBtn.disabled = true;
+    categorizeBtn.textContent = "Categorizing…";
+    categorizeStatus.hidden = false;
+    categorizeStatus.classList.remove("form-error");
+    categorizeStatus.textContent = "";
+    try {
+      const result = await api.categorizeNow();
+      categorizeStatus.textContent = `${result.categorized} transaction${result.categorized === 1 ? "" : "s"} categorized`;
+      await loadPage({ reset: true });
+    } catch (err) {
+      categorizeStatus.classList.add("form-error");
+      categorizeStatus.textContent = err.message || "Categorization failed.";
+    } finally {
+      categorizeBtn.disabled = false;
+      categorizeBtn.textContent = "Categorize now";
+    }
+  });
 
   await loadPage({ reset: true });
 }

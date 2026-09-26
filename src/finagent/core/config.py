@@ -1,14 +1,16 @@
 """Application configuration, sourced from environment variables (§3 of AGENTS.md)."""
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from finagent.core.errors import ExtractionError
+from finagent.core.errors import CategorizationError, ExtractionError
 
 if TYPE_CHECKING:
+    from finagent.categorize.anthropic import AnthropicCategorizer
     from finagent.ingest.extract.anthropic import AnthropicStatementExtractor
 
 
@@ -34,6 +36,11 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     extraction_model: str = "claude-opus-5-5"
     extraction_effort: str = "high"  # Set explicitly; Opus 5.5's API default is medium
+
+    categorization_model: str = "claude-haiku-4-5"
+    # A transaction categorized by AI below this confidence is flagged
+    # needs_review=true for the owner to check (see api/routes/transactions.py).
+    categorization_review_threshold: Decimal = Decimal("0.7")
 
     # API auth: every endpoint but GET /health requires this as a bearer
     # token (FINAGENT_API_TOKEN). None means auth is unconfigured, which
@@ -77,3 +84,25 @@ def build_extractor(settings: Settings) -> "AnthropicStatementExtractor":
         model=settings.extraction_model,
         effort=settings.extraction_effort,
     )
+
+
+def build_categorizer(settings: Settings) -> "AnthropicCategorizer":
+    """Construct the Anthropic-backed ``TransactionCategorizer`` from settings.
+
+    Raises ``CategorizationError`` with a clear message if no API key is
+    configured, rather than letting the SDK fail on the first request.
+    """
+    # Imported here, not at module level, for the same reason as
+    # build_extractor above: importing this module never requires the
+    # anthropic SDK unless categorization is actually used.
+    import anthropic
+
+    from finagent.categorize.anthropic import AnthropicCategorizer
+
+    if settings.anthropic_api_key is None:
+        raise CategorizationError(
+            "ANTHROPIC_API_KEY is not set; transaction categorization requires an Anthropic API key"
+        )
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key.get_secret_value())
+    return AnthropicCategorizer(client=client, model=settings.categorization_model)

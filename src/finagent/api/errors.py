@@ -13,7 +13,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
-from finagent.core.errors import ExtractionError, ParseError, UnsupportedStatementError
+from finagent.core.errors import (
+    CategorizationError,
+    ExtractionError,
+    ParseError,
+    UnsupportedStatementError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +28,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(UnsupportedStatementError, _handle_unsupported)
     app.add_exception_handler(ParseError, _handle_parse_error)
     app.add_exception_handler(ExtractionError, _handle_extraction_error)
+    app.add_exception_handler(CategorizationError, _handle_categorization_error)
     app.add_exception_handler(OperationalError, _handle_database_unavailable)
 
 
@@ -39,6 +45,13 @@ def _handle_extraction_error(request: Request, exc: Exception) -> JSONResponse:
     # document content (AGENTS.md §3: never log/return raw statement text).
     logger.warning("statement extraction failed: %s", type(exc).__name__)
     return JSONResponse(status_code=502, content={"detail": "Statement extraction failed"})
+
+
+def _handle_categorization_error(request: Request, exc: Exception) -> JSONResponse:
+    # Never echo the exception's own message: like extraction, it can
+    # originate from a transaction description (AGENTS.md §3).
+    logger.warning("transaction categorization failed: %s", type(exc).__name__)
+    return JSONResponse(status_code=502, content={"detail": "Transaction categorization failed"})
 
 
 def _handle_database_unavailable(request: Request, exc: Exception) -> JSONResponse:

@@ -10,17 +10,21 @@ load -> extract -> validate -> persist pipeline as the synchronous
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
-from finagent.core.errors import ExtractionError, FinAgentError
+from finagent.categorize.base import TransactionCategorizer
+from finagent.categorize.service import categorize_transactions
+from finagent.core.errors import CategorizationError, ExtractionError, FinAgentError
 from finagent.db.repository import (
     claim_next_upload,
     complete_upload,
     fail_upload,
+    list_uncategorized_transaction_ids_for_statement,
     requeue_stale_processing,
     save_extraction,
 )
@@ -30,6 +34,7 @@ from finagent.ingest.pipeline import extract_statement
 logger = logging.getLogger(__name__)
 
 _NOT_CONFIGURED_MESSAGE = "Extraction is not configured (ANTHROPIC_API_KEY missing)"
+_CATEGORIZE_LEFTOVER_LIMIT = 100
 
 
 class UploadWorker:
@@ -45,14 +50,19 @@ class UploadWorker:
         self,
         session_factory: Callable[[], AbstractContextManager[Session]],
         extractor_factory: Callable[[], StatementExtractor],
+        categorizer_factory: Callable[[], TransactionCategorizer],
         model: str,
         poll_interval: float = 2.0,
+        categorize_interval: float = 60.0,
     ) -> None:
         self._session_factory = session_factory
         self._extractor_factory = extractor_factory
+        self._categorizer_factory = categorizer_factory
         self._model = model
         self._poll_interval = poll_interval
+        self._categorize_interval = categorize_interval
         self._warned_not_configured = False
+        self._last_categorize_sweep = 0.0
 
     def process_one(self) -> bool:
         """Claim and process one queued upload. Returns False if none was queued."""
@@ -103,6 +113,7 @@ class UploadWorker:
                 logger.error("upload worker: unexpected %s in poll loop", type(exc).__name__)
                 processed = False
             if not processed:
+                self._maybe_categorize_leftovers()
                 stop_event.wait(self._poll_interval)
 
     def _claim(self) -> tuple[int, str, bytes, str | None, str] | None:
@@ -147,6 +158,71 @@ class UploadWorker:
             )
             complete_upload(session, upload_id, saved.statement_id)
             session.commit()
+            statement_id = saved.statement_id
+
+        # In its own DB transaction/session, deliberately after the upload's
+        # own commit above: a categorization failure (or a missing API key)
+        # must never fail the upload itself -- it just leaves the new
+        # transactions uncategorized for the idle sweep (or a manual
+        # POST /transactions/categorize) to pick up later.
+        self._categorize_after_upload(statement_id)
+
+    def _categorize_after_upload(self, statement_id: int) -> None:
+        try:
+            categorizer = self._categorizer_factory()
+            with self._session_factory() as session:
+                transaction_ids = list_uncategorized_transaction_ids_for_statement(
+                    session, statement_id
+                )
+                if not transaction_ids:
+                    session.rollback()
+                    return
+                categorize_transactions(
+                    session,
+                    categorizer,
+                    transaction_ids=transaction_ids,
+                    limit=len(transaction_ids),
+                )
+                session.commit()
+        except CategorizationError:
+            # Never surfaced to the upload: exception type only, never the
+            # message, since it could echo document content (AGENTS.md §3).
+            logger.warning(
+                "upload worker: %s categorizing statement %s",
+                CategorizationError.__name__,
+                statement_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "upload worker: unexpected %s categorizing statement %s",
+                type(exc).__name__,
+                statement_id,
+            )
+
+    def _maybe_categorize_leftovers(self) -> None:
+        """Self-heals rows left uncategorized by an earlier failed attempt.
+
+        Runs at most once every ``self._categorize_interval`` seconds, only
+        when the upload queue is idle, so it never competes with real
+        upload processing for the categorizer or the DB.
+        """
+        now = time.monotonic()
+        if now - self._last_categorize_sweep < self._categorize_interval:
+            return
+        self._last_categorize_sweep = now
+        try:
+            categorizer = self._categorizer_factory()
+            with self._session_factory() as session:
+                categorize_transactions(session, categorizer, limit=_CATEGORIZE_LEFTOVER_LIMIT)
+                session.commit()
+        except CategorizationError:
+            logger.warning(
+                "upload worker: %s during idle categorization sweep", CategorizationError.__name__
+            )
+        except Exception as exc:
+            logger.error(
+                "upload worker: unexpected %s during idle categorization sweep", type(exc).__name__
+            )
 
     def _fail(self, upload_id: int, message: str) -> None:
         with self._session_factory() as session:

@@ -11,7 +11,8 @@ from collections.abc import Iterator
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from finagent.core.config import Settings, build_extractor, get_settings
+from finagent.categorize.base import TransactionCategorizer
+from finagent.core.config import Settings, build_categorizer, build_extractor, get_settings
 from finagent.db.session import session_scope
 from finagent.ingest.extract.base import StatementExtractor
 
@@ -30,6 +31,11 @@ def get_db() -> Iterator[Session]:
 def get_extractor(settings: Settings = Depends(get_settings)) -> StatementExtractor:
     """The extractor used by the upload route. Overridden with a fake in tests."""
     return build_extractor(settings)
+
+
+def get_categorizer(settings: Settings = Depends(get_settings)) -> TransactionCategorizer:
+    """The categorizer used by POST /transactions/categorize. Overridden with a fake in tests."""
+    return build_categorizer(settings)
 
 
 def require_auth(request: Request, settings: Settings = Depends(get_settings)) -> None:

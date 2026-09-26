@@ -9,14 +9,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from finagent.core.errors import ExtractionError
-from finagent.db.models import Upload
+from finagent.core.errors import CategorizationError, ExtractionError
+from finagent.db.models import Transaction, Upload
 from finagent.db.repository import claim_next_upload, create_upload, requeue_stale_processing
 from finagent.worker import UploadWorker
 from tests.api.helpers import FakeExtractor, make_extraction
+from tests.categorize.helpers import FakeCategorizer
 
 
 @contextmanager
@@ -25,8 +26,15 @@ def _session_factory(session: Session) -> Iterator[Session]:
     yield session
 
 
-def _worker(session: Session, extractor_factory, model: str = "claude-test") -> UploadWorker:  # type: ignore[no-untyped-def]
-    return UploadWorker(lambda: _session_factory(session), extractor_factory, model=model)
+def _worker(
+    session: Session,
+    extractor_factory,  # type: ignore[no-untyped-def]
+    categorizer_factory=lambda: FakeCategorizer(),  # type: ignore[no-untyped-def]
+    model: str = "claude-test",
+) -> UploadWorker:
+    return UploadWorker(
+        lambda: _session_factory(session), extractor_factory, categorizer_factory, model=model
+    )
 
 
 def test_process_one_returns_false_when_queue_is_empty(session: Session) -> None:
@@ -128,6 +136,35 @@ def test_missing_extractor_configuration_fails_upload_with_safe_message(session:
     assert row is not None
     assert row.status == "ERROR"
     assert row.error == "Extraction is not configured (ANTHROPIC_API_KEY missing)"
+
+
+def test_categorizer_failure_after_upload_still_yields_done(session: Session) -> None:
+    upload = create_upload(
+        session, filename="a.csv", file_sha256="h" * 64, media_type="text/csv", data=b"whatever"
+    )
+    session.commit()
+    extractor = FakeExtractor([make_extraction()])
+
+    def _raise() -> FakeCategorizer:
+        raise CategorizationError("ANTHROPIC_API_KEY is not set")
+
+    worker = _worker(session, lambda: extractor, categorizer_factory=_raise)
+
+    assert worker.process_one() is True
+
+    session.expire_all()
+    row = session.get(Upload, upload.id)
+    assert row is not None
+    assert row.status == "DONE"  # the upload succeeds even though categorization couldn't run
+    assert row.statement_id is not None
+
+    transactions = list(
+        session.execute(
+            select(Transaction).where(Transaction.statement_id == row.statement_id)
+        ).scalars()
+    )
+    assert len(transactions) == 1
+    assert transactions[0].category_id is None  # left uncategorized for a later retry
 
 
 def test_requeue_stale_processing_recovers_orphaned_upload(session: Session) -> None:

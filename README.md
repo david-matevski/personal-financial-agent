@@ -71,6 +71,8 @@ GET http://localhost:8000/health
 | `FINAGENT_LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | `INFO` |
 | `FINAGENT_EXTRACTION_MODEL` | Claude model used to extract transactions from statements | `claude-opus-5-5` |
 | `FINAGENT_EXTRACTION_EFFORT` | Claude reasoning effort (low, medium, high, xhigh, max) | `high` |
+| `FINAGENT_CATEGORIZATION_MODEL` | Claude model used to categorize transactions | `claude-haiku-4-5` |
+| `FINAGENT_CATEGORIZATION_REVIEW_THRESHOLD` | AI-categorized transactions below this confidence (0-1) are flagged `needs_review` | `0.7` |
 | `FINAGENT_API_TOKEN` | Bearer token required by every endpoint except `GET /health` | none (fails closed) |
 | `FINAGENT_RUN_WORKER` | Whether this process runs the background worker that drains the `POST /uploads` queue | `true` |
 
