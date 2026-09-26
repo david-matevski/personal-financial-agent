@@ -91,6 +91,11 @@ tests/            mirrors src/ layout; fixtures/ holds SYNTHETIC samples only
   Hash inputs must be stable across LLM runs: never free text such as
   descriptions or product names — only normalized issuer, account last-4,
   dates, amounts, and sequence/balance.
+- **Overlapping imports are normal** (e.g. CSV exports over arbitrary
+  date ranges). Account identity is pinned to existing accounts before
+  hashing so issuer-name drift can't fork an account. Near-duplicates that
+  the hash can't catch are *flagged* for the owner, never auto-deleted;
+  removal is a soft delete (`removed_at`) that can be undone.
 - **No per-issuer parsers.** New issuers and formats must work without new
   code. Issuer-specific knowledge, if ever needed, goes in the extraction
   prompt, not in branching code.
