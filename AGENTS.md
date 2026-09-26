@@ -148,6 +148,11 @@ pytest
 All four must pass. If something can't pass (e.g. no Postgres locally),
 say so explicitly in the report — never claim green when it isn't.
 
+Run pytest against a real database: `python scripts/dev_db.py` starts a
+local Postgres and prints the test `FINAGENT_DATABASE_URL`. Always report the
+pytest **pass and skip counts**. A run where DB tests skipped is not green;
+say so rather than summarising it as "tests pass".
+
 ---
 
 ## 5. Commits
