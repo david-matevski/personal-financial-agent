@@ -97,6 +97,7 @@ Authorization: Bearer <FINAGENT_API_TOKEN>
 | `GET` | `/statements/{statement_id}` | Fetch one statement | `include_extraction` (bool, default false) |
 | `GET` | `/accounts` | List accounts | — |
 | `GET` | `/transactions` | List transactions, newest first | `account_id`, `date_from`, `date_to`, `category_id`, `limit` (default 100, max 1000), `offset` |
+| `POST` | `/transactions/confirm` | Mark listed, already-categorized transactions as owner-confirmed (`category_source='user'`); uncategorized or unknown ids are skipped | body: `ids` (1-500 transaction ids) |
 | `GET` | `/categories` | List categories | — |
 
 Queue a statement for background extraction with curl (recommended -- doesn't block on the 30-90s extraction):

@@ -8,7 +8,7 @@ rather than relying on implicit Decimal -> str coercion.
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class UploadResponse(BaseModel):
@@ -113,6 +113,25 @@ class CategoryUpdateRequest(BaseModel):
     """Request body for PATCH /transactions/{id}."""
 
     category_id: int = Field(ge=1, le=CATEGORY_ID_MAX)
+
+
+class ConfirmRequest(BaseModel):
+    """Request body for POST /transactions/confirm."""
+
+    ids: list[int] = Field(min_length=1, max_length=500)
+
+    @field_validator("ids")
+    @classmethod
+    def _ids_are_positive(cls, ids: list[int]) -> list[int]:
+        if any(i < 1 for i in ids):
+            raise ValueError("ids must be >= 1")
+        return ids
+
+
+class ConfirmResponse(BaseModel):
+    """Response body for POST /transactions/confirm."""
+
+    confirmed: int
 
 
 class CategorizeResponse(BaseModel):

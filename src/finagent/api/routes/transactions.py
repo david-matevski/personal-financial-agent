@@ -10,6 +10,8 @@ from finagent.api.schemas import (
     CATEGORY_ID_MAX,
     CategorizeResponse,
     CategoryUpdateRequest,
+    ConfirmRequest,
+    ConfirmResponse,
     TransactionOut,
 )
 from finagent.categorize.base import TransactionCategorizer
@@ -17,6 +19,7 @@ from finagent.categorize.service import categorize_transactions, count_pool, loa
 from finagent.core.config import Settings, get_settings
 from finagent.db.models import Transaction
 from finagent.db.repository import (
+    confirm_transactions,
     get_category,
     get_transaction,
     list_transactions,
@@ -73,6 +76,20 @@ def update_transaction_category_route(
     row = set_transaction_category_by_user(session, transaction_id, body.category_id)
     assert row is not None  # existence just checked above, same session
     return _to_schema(row, settings)
+
+
+@router.post("/transactions/confirm", response_model=ConfirmResponse)
+def confirm_transactions_route(
+    body: ConfirmRequest,
+    session: Session = Depends(get_db),
+) -> ConfirmResponse:
+    """Mark listed, already-categorized transactions as owner-confirmed.
+
+    Uncategorized or unknown ids are skipped, not errors -- there's nothing
+    to confirm for them.
+    """
+    count = confirm_transactions(session, body.ids)
+    return ConfirmResponse(confirmed=count)
 
 
 @router.post("/transactions/categorize", response_model=CategorizeResponse)

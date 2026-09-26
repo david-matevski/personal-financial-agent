@@ -309,6 +309,86 @@ def test_categorize_after_id_pages_through_the_pool(client: TestClient) -> None:
     assert second.json() == {"categorized": 0, "remaining": 0, "last_id": body["last_id"]}
 
 
+def test_confirm_flips_source_to_user_and_clears_confidence_and_needs_review(
+    client: TestClient,
+) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer(
+        confidence=Decimal("0.5")
+    )
+    assert client.post("/transactions/categorize").status_code == 200
+    before = client.get("/transactions").json()[0]
+    assert before["category_source"] == "ai"
+    assert before["needs_review"] is True
+
+    response = client.post("/transactions/confirm", json={"ids": [transaction_id]})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"confirmed": 1}
+    after = client.get("/transactions").json()[0]
+    assert after["category_id"] == before["category_id"]
+    assert after["category_source"] == "user"
+    assert after["category_confidence"] is None
+    assert after["needs_review"] is False
+
+
+def test_confirm_skips_uncategorized_and_unknown_ids(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+
+    response = client.post("/transactions/confirm", json={"ids": [transaction_id, 999999]})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"confirmed": 0}
+    row = client.get("/transactions").json()[0]
+    assert row["category_id"] is None
+
+
+def test_confirm_is_idempotent(client: TestClient) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer()
+    assert client.post("/transactions/categorize").status_code == 200
+
+    first = client.post("/transactions/confirm", json={"ids": [transaction_id]})
+    second = client.post("/transactions/confirm", json={"ids": [transaction_id]})
+
+    assert first.status_code == 200
+    assert first.json() == {"confirmed": 1}
+    assert second.status_code == 200
+    assert second.json() == {"confirmed": 1}
+
+
+def test_confirm_rejects_empty_list(client: TestClient) -> None:
+    response = client.post("/transactions/confirm", json={"ids": []})
+
+    assert response.status_code == 422
+
+
+def test_confirm_rejects_more_than_500_ids(client: TestClient) -> None:
+    response = client.post("/transactions/confirm", json={"ids": list(range(1, 502))})
+
+    assert response.status_code == 422
+
+
+def test_confirmed_row_is_excluded_from_include_ai_recategorization(
+    client: TestClient,
+) -> None:
+    _upload(client, "a.csv", {})
+    transaction_id = client.get("/transactions").json()[0]["id"]
+    client.app.dependency_overrides[get_categorizer] = lambda: FakeCategorizer()
+    assert client.post("/transactions/categorize").status_code == 200
+    assert client.post("/transactions/confirm", json={"ids": [transaction_id]}).status_code == 200
+
+    response = client.post("/transactions/categorize", params={"include_ai": "true"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["categorized"] == 0
+    row = client.get("/transactions").json()[0]
+    assert row["category_source"] == "user"
+
+
 def test_categorize_endpoint_maps_categorization_error_to_502(client: TestClient) -> None:
     _upload(client, "a.csv", {})
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import and_, case, func, not_, or_, select
+from sqlalchemy import and_, case, func, not_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -293,6 +293,28 @@ def set_transaction_category_by_user(
     row.categorized_at = datetime.now(timezone.utc)
     session.flush()
     return row
+
+
+def confirm_transactions(session: Session, ids: list[int]) -> int:
+    """Mark listed, already-categorized transactions as owner-confirmed.
+
+    Sets ``category_source='user'`` and clears ``category_confidence`` --
+    same effect as ``set_transaction_category_by_user`` but keeping the
+    existing ``category_id``, for the "this AI guess is correct" case.
+    Uncategorized or unknown ids are silently skipped (not an error): a
+    single conditional UPDATE, so the route contains no logic.
+    """
+    result = session.execute(
+        update(TransactionRow)
+        .where(TransactionRow.id.in_(ids), TransactionRow.category_id.isnot(None))
+        .values(
+            category_source="user",
+            category_confidence=None,
+            categorized_at=datetime.now(timezone.utc),
+        )
+        .returning(TransactionRow.id)
+    )
+    return len(result.scalars().all())
 
 
 def list_categories(session: Session) -> list[Category]:
