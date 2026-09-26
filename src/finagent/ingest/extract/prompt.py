@@ -31,14 +31,14 @@ default to the issuing country's currency only as a last resort.
 (YYYY-MM-DD), or null if the statement doesn't print one.
 - opening_balance / closing_balance: for a credit card, the previous \
 statement balance and new balance; for a bank account, the opening and \
-closing balance for the period. Copy the printed value exactly (as a \
-string, with or without a leading "$", exactly as printed). Null if the \
-statement does not print one.
+closing balance for the period. Copy the amount exactly as printed, \
+including any currency symbol, sign, "CR"/"DR" marker, or parentheses -- \
+do not strip or convert anything. Null if the statement does not print one.
 - total_money_out / total_money_in: printed summary totals for the period \
 (e.g. "Total purchases and other debits", "Total payments and credits"), \
-if and only if the statement prints them. Do not compute these yourself \
-from the transaction list -- report null when no such total line is \
-printed.
+if and only if the statement prints them. Copy each exactly as printed, \
+including any CR/DR marker or sign. Do not compute these yourself from the \
+transaction list -- report null when no such total line is printed.
 
 ## Transactions
 
@@ -50,9 +50,10 @@ statement only prints one date per line, use that date here.
 - description: the transaction description exactly as printed, on one \
 line. If a description wraps across two or more printed lines, fold them \
 back into a single description.
-- amount: the transaction amount as printed, unsigned (no minus sign, no \
-direction indicator baked in -- report the magnitude only, as a string \
-exactly as printed, e.g. "1,234.56").
+- amount: copy the amount exactly as printed, including any currency \
+symbol, sign, "CR"/"DR" marker, or parentheses. Do not strip or convert \
+anything -- report it as a string exactly as it appears, e.g. "1,234.56", \
+"$270.46CR", "-45.00", or "(45.00)".
 - direction: "OUT" for money leaving the account -- purchases, fees, \
 interest charges, withdrawals; "IN" for money entering the account -- \
 payments, refunds, credits, deposits, income. Use the statement's own cues \

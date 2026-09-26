@@ -167,6 +167,46 @@ def test_categorizer_failure_after_upload_still_yields_done(session: Session) ->
     assert transactions[0].category_id is None  # left uncategorized for a later retry
 
 
+def test_unparseable_amount_on_both_attempts_yields_done_with_failed_statement(
+    session: Session,
+) -> None:
+    """A statement whose amounts can't be normalized on either attempt must
+    still record a FAILED statement for review, not an upload ERROR with
+    nothing recorded (the bug this task fixes).
+    """
+    upload = create_upload(
+        session, filename="a.csv", file_sha256="k" * 64, media_type="text/csv", data=b"whatever"
+    )
+    session.commit()
+    unparseable = make_extraction(
+        transactions=[
+            {
+                "posted_date": "2026-01-05",
+                "description": "Fictional Coffee Co",
+                "amount": "garbage",
+                "direction": "OUT",
+            }
+        ]
+    )
+    extractor = FakeExtractor([unparseable, unparseable])
+    worker = _worker(session, lambda: extractor)
+
+    assert worker.process_one() is True
+
+    session.expire_all()
+    row = session.get(Upload, upload.id)
+    assert row is not None
+    assert row.status == "DONE"
+    assert row.statement_id is not None
+
+    transactions = list(
+        session.execute(
+            select(Transaction).where(Transaction.statement_id == row.statement_id)
+        ).scalars()
+    )
+    assert transactions == []
+
+
 def test_requeue_stale_processing_recovers_orphaned_upload(session: Session) -> None:
     create_upload(session, filename="a.csv", file_sha256="e" * 64, media_type="text/csv", data=b"x")
     session.commit()
