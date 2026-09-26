@@ -4,6 +4,7 @@ import { el, clear } from "./js/dom.js";
 import * as uploadView from "./js/views/upload.js";
 import * as statementsView from "./js/views/statements.js";
 import * as transactionsView from "./js/views/transactions.js";
+import * as spendingView from "./js/views/spending.js";
 import * as accountsView from "./js/views/accounts.js";
 
 const header = document.querySelector(".app-header");
@@ -15,14 +16,16 @@ const connectTemplate = document.getElementById("tpl-connect");
 const ROUTES = {
   upload: { title: "Upload", mount: (root) => uploadView.render(root) },
   statements: { title: "Statements", mount: (root, params) => statementsView.render(root, params) },
-  transactions: { title: "Transactions", mount: (root) => transactionsView.render(root) },
+  transactions: { title: "Transactions", mount: (root, params) => transactionsView.render(root, params) },
+  spending: { title: "Spending", mount: (root, params) => spendingView.render(root, params) },
   accounts: { title: "Accounts", mount: (root) => accountsView.render(root) },
 };
 
 function parseHash() {
   const raw = window.location.hash.replace(/^#\/?/, "");
-  const [routeName, idPart] = raw.split("/").filter(Boolean);
-  return { routeName: routeName || "upload", idPart };
+  const [pathPart, queryPart] = raw.split("?");
+  const [routeName, idPart] = pathPart.split("/").filter(Boolean);
+  return { routeName: routeName || "upload", idPart, params: new URLSearchParams(queryPart || "") };
 }
 
 function setActiveNav(routeName) {
@@ -70,7 +73,7 @@ function showConnectScreen(message) {
 let currentContainer = null;
 
 async function mountRoute() {
-  const { routeName, idPart } = parseHash();
+  const { routeName, idPart, params } = parseHash();
   const route = ROUTES[routeName] || ROUTES.upload;
   setActiveNav(routeName in ROUTES ? routeName : "upload");
   const container = el("div", { class: "route" });
@@ -78,7 +81,7 @@ async function mountRoute() {
   clear(main);
   main.appendChild(container);
   try {
-    await route.mount(container, { statementId: idPart ? Number(idPart) : undefined });
+    await route.mount(container, { statementId: idPart ? Number(idPart) : undefined, params });
   } catch (err) {
     if (container !== currentContainer) return;
     if (err instanceof AuthError) {
