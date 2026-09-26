@@ -107,6 +107,8 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
       clear(sourceBadgeSlot);
       const newBadge = categorySourceBadge(tx);
       if (newBadge) sourceBadgeSlot.appendChild(newBadge);
+      clear(reviewCell);
+      if (tx.needs_review) reviewCell.appendChild(badge("Review", "warn"));
       onCategoryChange(tx);
     } catch (err) {
       select.value = previousValue;
