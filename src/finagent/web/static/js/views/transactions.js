@@ -62,14 +62,16 @@ function renderTotals(container, rows) {
 }
 
 function buildCategorySelect(tx, categories) {
-  const select = el(
-    "select",
-    { "aria-label": `Category for ${tx.description}` },
-    [
-      el("option", { value: "", text: "Uncategorized" }),
-      ...categories.map((c) => el("option", { value: String(c.id), text: c.name })),
-    ]
-  );
+  // No "Uncategorized" choice: the worker re-categorizes uncategorized rows
+  // with AI, so clearing a category wouldn't stick. A row that has no
+  // category yet shows a placeholder that can't be picked back.
+  const options = categories.map((c) => el("option", { value: String(c.id), text: c.name }));
+  if (tx.category_id == null) {
+    const placeholder = el("option", { value: "", text: "Choose a category…" });
+    placeholder.disabled = true;
+    options.unshift(placeholder);
+  }
+  const select = el("select", { "aria-label": `Category for ${tx.description}` }, options);
   select.value = tx.category_id != null ? String(tx.category_id) : "";
   return select;
 }
@@ -93,11 +95,12 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
   select.addEventListener("change", async () => {
     const previousValue = tx.category_id != null ? String(tx.category_id) : "";
     const chosen = select.value;
+    if (chosen === "") return;
     select.disabled = true;
     savedNote.textContent = "";
     savedNote.classList.remove("form-error");
     try {
-      const updated = await api.updateTransactionCategory(tx.id, chosen === "" ? null : Number(chosen));
+      const updated = await api.updateTransactionCategory(tx.id, Number(chosen));
       tx.category_id = updated.category_id;
       tx.category_name = updated.category_name;
       tx.category_source = "user";
@@ -224,9 +227,10 @@ export async function render(root, { params } = {}) {
   ]);
 
   const categorizeBtn = el("button", { type: "button", class: "btn btn--primary", text: "Categorize now" });
+  const rerunAiBtn = el("button", { type: "button", class: "btn", text: "Re-run AI on all" });
   const categorizeStatus = el("p", { class: "empty-state", role: "status" });
   categorizeStatus.hidden = true;
-  const actionsBar = el("div", { class: "actions-bar" }, [categorizeBtn, categorizeStatus]);
+  const actionsBar = el("div", { class: "actions-bar" }, [categorizeBtn, rerunAiBtn, categorizeStatus]);
 
   const totalsBar = el("div", { class: "totals-bar" });
   const tableContainer = el("div");
@@ -315,6 +319,7 @@ export async function render(root, { params } = {}) {
 
   categorizeBtn.addEventListener("click", async () => {
     categorizeBtn.disabled = true;
+    rerunAiBtn.disabled = true;
     categorizeBtn.textContent = "Categorizing…";
     categorizeStatus.hidden = false;
     categorizeStatus.classList.remove("form-error");
@@ -328,7 +333,42 @@ export async function render(root, { params } = {}) {
       categorizeStatus.textContent = err.message || "Categorization failed.";
     } finally {
       categorizeBtn.disabled = false;
+      rerunAiBtn.disabled = false;
       categorizeBtn.textContent = "Categorize now";
+    }
+  });
+
+  rerunAiBtn.addEventListener("click", async () => {
+    if (!window.confirm("Re-check every AI-assigned category? Your own corrections are kept.")) {
+      return;
+    }
+    categorizeBtn.disabled = true;
+    rerunAiBtn.disabled = true;
+    rerunAiBtn.textContent = "Re-categorizing…";
+    categorizeStatus.hidden = false;
+    categorizeStatus.classList.remove("form-error");
+    categorizeStatus.textContent = "Re-categorizing…";
+    let afterId;
+    let totalDone = 0;
+    try {
+      for (;;) {
+        const result = await api.categorizeNow({ include_ai: true, after_id: afterId });
+        totalDone += result.categorized;
+        categorizeStatus.textContent = `Re-categorizing… ${totalDone} done`;
+        if (!result.remaining || result.last_id == null || result.last_id === afterId) {
+          break;
+        }
+        afterId = result.last_id;
+      }
+      categorizeStatus.textContent = `${totalDone} transaction${totalDone === 1 ? "" : "s"} re-categorized`;
+      await loadPage({ reset: true });
+    } catch (err) {
+      categorizeStatus.classList.add("form-error");
+      categorizeStatus.textContent = err.message || "Re-categorization failed.";
+    } finally {
+      categorizeBtn.disabled = false;
+      rerunAiBtn.disabled = false;
+      rerunAiBtn.textContent = "Re-run AI on all";
     }
   });
 
