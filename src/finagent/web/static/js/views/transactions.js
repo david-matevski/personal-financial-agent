@@ -4,6 +4,7 @@ import * as api from "../api.js";
 
 const PAGE_SIZE = 100;
 const UNCATEGORIZED_VALUE = "uncategorized";
+const CONFIRM_CHUNK_SIZE = 500;
 
 function accountLabel(accountsById, accountId) {
   const account = accountsById.get(accountId);
@@ -23,20 +24,63 @@ function formatConfidence(confidence) {
   return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 0 }).format(value);
 }
 
-function categorySourceBadge(tx) {
-  if (tx.category_source === "ai") {
-    const pct = formatConfidence(tx.category_confidence);
-    const node = badge("AI", "neutral");
-    if (pct) {
-      node.title = `AI categorized, ${pct} confidence`;
-      node.appendChild(el("span", { class: "visually-hidden", text: ` (${pct} confidence)` }));
-    }
-    return node;
+// Renders the Status cell for one transaction into `cell` (cleared first).
+// Called both at initial row build and after any update (category change,
+// single confirm, bulk confirm), so every path shows the same states:
+//   - uncategorized: nothing to confirm
+//   - needs review (AI, low confidence or otherwise flagged): a badge plus
+//     a compact Confirm button that marks the AI's guess correct in place
+//   - AI, confident: muted "AI · NN%"
+//   - set or confirmed by the owner: muted "✓ You"
+function renderStatusCell(cell, tx, onChanged) {
+  clear(cell);
+  if (tx.category_id == null) {
+    cell.appendChild(el("span", { class: "status-muted", text: "Not categorized" }));
+    return;
   }
   if (tx.category_source === "user") {
-    return badge("You", "neutral");
+    cell.appendChild(
+      el("span", { class: "status-muted", title: "Set or confirmed by you", text: "✓ You" })
+    );
+    return;
   }
-  return null;
+  if (tx.needs_review) {
+    const errorNote = el("span", { class: "status-error", role: "alert" });
+    const confirmBtn = el("button", {
+      type: "button",
+      class: "btn btn--small",
+      text: "✓ Confirm",
+      "aria-label": `Confirm category ${tx.category_name ?? ""} for ${tx.description}`,
+    });
+    confirmBtn.addEventListener("click", async () => {
+      confirmBtn.disabled = true;
+      errorNote.textContent = "";
+      try {
+        await api.confirmCategories([tx.id]);
+        tx.category_source = "user";
+        tx.category_confidence = null;
+        tx.needs_review = false;
+        renderStatusCell(cell, tx, onChanged);
+        onChanged(tx);
+      } catch (err) {
+        errorNote.textContent = err.message || "Could not confirm.";
+        confirmBtn.disabled = false;
+      }
+    });
+    cell.appendChild(
+      el("div", { class: "status-review" }, [badge("Review", "warn"), confirmBtn, errorNote])
+    );
+    return;
+  }
+  const pct = formatConfidence(tx.category_confidence);
+  const label = pct ? `AI · ${pct}` : "AI";
+  const full = pct ? `Categorized by AI, ${pct} confidence` : "Categorized by AI";
+  cell.appendChild(
+    el("span", { class: "status-muted", title: full }, [
+      label,
+      el("span", { class: "visually-hidden", text: ` (${full})` }),
+    ])
+  );
 }
 
 function renderTotals(container, rows) {
@@ -88,9 +132,8 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
 
   const select = buildCategorySelect(tx, categories);
   const savedNote = el("span", { class: "save-note", role: "status" });
-  const sourceBadgeSlot = el("span", { class: "category-badge-slot" });
-  const sourceBadge = categorySourceBadge(tx);
-  if (sourceBadge) sourceBadgeSlot.appendChild(sourceBadge);
+  const statusCell = el("td", { class: "status-cell" });
+  renderStatusCell(statusCell, tx, onCategoryChange);
 
   select.addEventListener("change", async () => {
     const previousValue = tx.category_id != null ? String(tx.category_id) : "";
@@ -107,11 +150,7 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
       tx.category_confidence = updated.category_confidence;
       tx.needs_review = updated.needs_review;
       savedNote.textContent = "Saved";
-      clear(sourceBadgeSlot);
-      const newBadge = categorySourceBadge(tx);
-      if (newBadge) sourceBadgeSlot.appendChild(newBadge);
-      clear(reviewCell);
-      if (tx.needs_review) reviewCell.appendChild(badge("Review", "warn"));
+      renderStatusCell(statusCell, tx, onCategoryChange);
       onCategoryChange(tx);
     } catch (err) {
       select.value = previousValue;
@@ -124,17 +163,15 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
 
   const categoryCell = el("td", { class: "category-cell" }, [
     select,
-    el("div", { class: "category-cell__meta" }, [sourceBadgeSlot, savedNote]),
+    el("div", { class: "category-cell__meta" }, [savedNote]),
   ]);
-
-  const reviewCell = el("td", {}, tx.needs_review ? [badge("Review", "warn")] : []);
 
   return el("tr", {}, [
     el("td", { text: formatDate(tx.posted_date || tx.transaction_date) }),
     el("td", { class: "description-cell", text: tx.description }),
     el("td", { text: accountLabel(accountsById, tx.account_id) }),
     categoryCell,
-    reviewCell,
+    statusCell,
     amountCell,
   ]);
 }
@@ -154,7 +191,7 @@ function renderTable(container, rows, accountsById, categories, onCategoryChange
         el("th", { text: "Description" }),
         el("th", { text: "Account" }),
         el("th", { text: "Category" }),
-        el("th", { text: "Review" }),
+        el("th", { text: "Status" }),
         el("th", { text: "Amount" }),
       ]),
     ])
@@ -233,6 +270,9 @@ export async function render(root, { params } = {}) {
   const actionsBar = el("div", { class: "actions-bar" }, [categorizeBtn, rerunAiBtn, categorizeStatus]);
 
   const totalsBar = el("div", { class: "totals-bar" });
+  const bulkConfirmBtn = el("button", { type: "button", class: "btn", text: "Confirm all shown" });
+  bulkConfirmBtn.hidden = true;
+  const bulkBar = el("div", { class: "bulk-bar" }, [bulkConfirmBtn]);
   const tableContainer = el("div");
   const loadMoreBtn = el("button", { type: "button", class: "btn", text: "Load more" });
   const statusLine = el("p", { class: "empty-state" });
@@ -240,6 +280,7 @@ export async function render(root, { params } = {}) {
   view.appendChild(actionsBar);
   view.appendChild(filters);
   view.appendChild(totalsBar);
+  view.appendChild(bulkBar);
   view.appendChild(tableContainer);
   view.appendChild(statusLine);
   view.appendChild(loadMoreBtn);
@@ -266,14 +307,28 @@ export async function render(root, { params } = {}) {
     return allRows.filter((tx) => matchesSearch(tx, term));
   }
 
+  function confirmableRows(rows) {
+    return rows.filter((tx) => tx.needs_review && tx.category_id != null);
+  }
+
+  function updateBulkButton(filtered) {
+    const rows = filtered ?? applyClientFilters();
+    const candidates = confirmableRows(rows);
+    bulkConfirmBtn.hidden = candidates.length === 0;
+    bulkConfirmBtn.textContent = `Confirm all ${candidates.length} shown`;
+  }
+
   function redraw() {
     const filtered = applyClientFilters();
     renderTable(tableContainer, filtered, accountsById, categories, () => redrawTotalsOnly());
     renderTotals(totalsBar, filtered);
+    updateBulkButton(filtered);
   }
 
   function redrawTotalsOnly() {
-    renderTotals(totalsBar, applyClientFilters());
+    const filtered = applyClientFilters();
+    renderTotals(totalsBar, filtered);
+    updateBulkButton(filtered);
   }
 
   async function loadPage({ reset }) {
@@ -369,6 +424,34 @@ export async function render(root, { params } = {}) {
       categorizeBtn.disabled = false;
       rerunAiBtn.disabled = false;
       rerunAiBtn.textContent = "Re-run AI on all";
+    }
+  });
+
+  bulkConfirmBtn.addEventListener("click", async () => {
+    const candidates = confirmableRows(applyClientFilters());
+    if (!candidates.length) return;
+    if (!window.confirm(`Mark ${candidates.length} AI categories as correct?`)) return;
+    bulkConfirmBtn.disabled = true;
+    statusLine.hidden = false;
+    statusLine.textContent = "Confirming…";
+    try {
+      let confirmed = 0;
+      for (let i = 0; i < candidates.length; i += CONFIRM_CHUNK_SIZE) {
+        const chunk = candidates.slice(i, i + CONFIRM_CHUNK_SIZE);
+        const result = await api.confirmCategories(chunk.map((tx) => tx.id));
+        confirmed += result.confirmed;
+        for (const tx of chunk) {
+          tx.category_source = "user";
+          tx.category_confidence = null;
+          tx.needs_review = false;
+        }
+      }
+      statusLine.textContent = `${confirmed} confirmed`;
+      redraw();
+    } catch (err) {
+      statusLine.textContent = err.message || "Could not confirm.";
+    } finally {
+      bulkConfirmBtn.disabled = false;
     }
   });
 

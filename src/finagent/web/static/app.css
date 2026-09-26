@@ -541,6 +541,44 @@ td.filename-cell {
   background: transparent;
 }
 
+/* ---------- Status cell ---------- */
+.status-cell {
+  min-width: 150px;
+  white-space: normal;
+}
+
+.status-muted {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.status-review {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.status-error {
+  color: var(--color-danger);
+  font-size: 0.78rem;
+}
+
+.btn--small {
+  padding: 3px 9px;
+  font-size: 0.78rem;
+}
+
+/* ---------- Bulk confirm bar ---------- */
+.bulk-bar .btn {
+  margin-bottom: 12px;
+}
+
+.bulk-bar .btn[hidden] {
+  display: none;
+  margin-bottom: 0;
+}
+
 /* ---------- Spending view ---------- */
 .quick-ranges {
   display: flex;

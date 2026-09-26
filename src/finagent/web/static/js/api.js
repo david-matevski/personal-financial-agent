@@ -126,6 +126,10 @@ export function updateTransactionCategory(id, categoryId) {
   });
 }
 
+export function confirmCategories(ids) {
+  return request("/transactions/confirm", { method: "POST", body: { ids } });
+}
+
 export function categorizeNow({ include_ai, after_id } = {}) {
   const params = new URLSearchParams();
   if (include_ai) params.set("include_ai", "true");
