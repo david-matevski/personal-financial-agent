@@ -127,6 +127,32 @@ comment.
 
 See [AGENTS.md](AGENTS.md) for contributing standards, code layout, and architecture decisions.
 
+### Local database
+
+For local development and testing, use the bundled PostgreSQL via `pgserver`:
+
+```bash
+pip install -e ".[dev,localdb]"
+python scripts/dev_db.py
+```
+
+This starts a local PostgreSQL server in `build/pgdata/` and prints two environment variable
+assignments. To run pytest with the test database:
+
+```powershell
+# PowerShell
+$env:FINAGENT_DATABASE_URL="postgresql+psycopg://postgres:@127.0.0.1:<port>/finagent_test"
+pytest
+```
+
+```bash
+# bash
+export FINAGENT_DATABASE_URL="postgresql+psycopg://postgres:@127.0.0.1:<port>/finagent_test"
+pytest
+```
+
+Use `python scripts/dev_db.py --stop` to stop the server (data persists).
+
 Quality gate — all four must pass:
 ```bash
 ruff format .
