@@ -14,9 +14,14 @@ export function formatBytes(bytes) {
   return `${value.toFixed(decimals)} ${units[unitIndex]}`;
 }
 
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 export function formatDate(value) {
   if (!value) return "—";
-  const date = new Date(value);
+  // A bare "YYYY-MM-DD" is a calendar date. new Date() would read it as UTC
+  // midnight, which renders as the previous day anywhere west of UTC.
+  const match = DATE_ONLY.exec(value);
+  const date = match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return new Intl.DateTimeFormat(undefined, {
     year: "numeric",
