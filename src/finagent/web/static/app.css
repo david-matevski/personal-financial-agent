@@ -569,6 +569,45 @@ td.filename-cell {
   font-size: 0.78rem;
 }
 
+.status-review--duplicate {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.duplicate-match {
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+  max-width: 260px;
+  overflow: hidden;
+}
+
+.duplicate-match__desc {
+  display: inline-block;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.status-review__actions {
+  display: flex;
+  gap: 6px;
+}
+
+tr.row-removed {
+  opacity: 0.55;
+}
+
+tr.row-removed td {
+  text-decoration: line-through;
+}
+
+tr.row-removed td.status-cell {
+  text-decoration: none;
+}
+
 /* ---------- Bulk confirm bar ---------- */
 .bulk-bar .btn {
   margin-bottom: 12px;
