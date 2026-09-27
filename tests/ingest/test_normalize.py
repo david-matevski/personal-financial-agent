@@ -158,10 +158,61 @@ def test_normalize_parses_period_dates() -> None:
     assert statement.period_end == date(2026, 1, 31)
 
 
-def test_normalize_allows_missing_period() -> None:
-    statement = normalize(_extraction(period_start=None, period_end=None))
+def test_normalize_derives_missing_period_from_transaction_dates() -> None:
+    """No printed period: derive it from the min/max posted date instead."""
+    extraction = _extraction(
+        period_start=None,
+        period_end=None,
+        transactions=[
+            {
+                "posted_date": "2026-01-06",
+                "description": "Fictional Coffee Co",
+                "amount": "5.00",
+                "direction": "OUT",
+            },
+            {
+                "posted_date": "2026-01-20",
+                "description": "Fictional Grocer",
+                "amount": "8.00",
+                "direction": "OUT",
+            },
+        ],
+    )
+    statement = normalize(extraction)
+    assert statement.period_start == date(2026, 1, 6)
+    assert statement.period_end == date(2026, 1, 20)
+    assert statement.period_derived is True
+
+
+def test_normalize_derives_only_the_missing_bound() -> None:
+    extraction = _extraction(
+        period_start="2026-01-01",
+        period_end=None,
+        transactions=[
+            {
+                "posted_date": "2026-01-06",
+                "description": "Fictional Coffee Co",
+                "amount": "5.00",
+                "direction": "OUT",
+            }
+        ],
+    )
+    statement = normalize(extraction)
+    assert statement.period_start == date(2026, 1, 1)  # printed value kept as-is
+    assert statement.period_end == date(2026, 1, 6)  # derived from the only transaction
+    assert statement.period_derived is True
+
+
+def test_normalize_no_transactions_and_no_period_stays_none_and_not_derived() -> None:
+    statement = normalize(_extraction(period_start=None, period_end=None, transactions=[]))
     assert statement.period_start is None
     assert statement.period_end is None
+    assert statement.period_derived is False
+
+
+def test_normalize_printed_period_is_not_marked_derived() -> None:
+    statement = normalize(_extraction(period_start="2026-01-01", period_end="2026-01-31"))
+    assert statement.period_derived is False
 
 
 def test_normalize_rejects_unparseable_amount() -> None:

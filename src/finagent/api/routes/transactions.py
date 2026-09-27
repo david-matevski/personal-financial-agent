@@ -12,6 +12,8 @@ from finagent.api.schemas import (
     CategoryUpdateRequest,
     ConfirmRequest,
     ConfirmResponse,
+    DuplicateActionRequest,
+    DuplicateCandidateOut,
     TransactionOut,
 )
 from finagent.categorize.base import TransactionCategorizer
@@ -19,6 +21,7 @@ from finagent.categorize.service import categorize_transactions, count_pool, loa
 from finagent.core.config import Settings, get_settings
 from finagent.db.models import Transaction
 from finagent.db.repository import (
+    apply_duplicate_action,
     confirm_transactions,
     get_category,
     get_transaction,
@@ -39,6 +42,8 @@ def list_transactions_route(
     category_id: int | None = Query(default=None, ge=1, le=CATEGORY_ID_MAX),
     needs_review: bool | None = None,
     uncategorized: bool | None = None,
+    possible_duplicates: bool = False,
+    include_removed: bool = False,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
@@ -54,6 +59,8 @@ def list_transactions_route(
         needs_review=needs_review,
         review_threshold=settings.categorization_review_threshold,
         uncategorized=uncategorized,
+        possible_duplicates=possible_duplicates,
+        include_removed=include_removed,
         limit=limit,
         offset=offset,
     )
@@ -90,6 +97,20 @@ def confirm_transactions_route(
     """
     count = confirm_transactions(session, body.ids)
     return ConfirmResponse(confirmed=count)
+
+
+@router.post("/transactions/{transaction_id}/duplicate", response_model=TransactionOut)
+def apply_duplicate_action_route(
+    transaction_id: int,
+    body: DuplicateActionRequest,
+    session: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> TransactionOut:
+    """Resolve a near-duplicate flag: keep both, remove this row, or restore it."""
+    row = apply_duplicate_action(session, transaction_id, body.action)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return _to_schema(row, settings)
 
 
 @router.post("/transactions/categorize", response_model=CategorizeResponse)
@@ -134,6 +155,20 @@ def _to_schema(row: Transaction, settings: Settings) -> TransactionOut:
         and row.category_confidence is not None
         and row.category_confidence < settings.categorization_review_threshold
     )
+    candidate = row.duplicate_candidate
+    duplicate_candidate = (
+        DuplicateCandidateOut(
+            id=candidate.id,
+            posted_date=candidate.posted_date,
+            description=candidate.description,
+            amount=str(candidate.amount),
+            statement_id=candidate.statement_id,
+        )
+        if row.possible_duplicate_of is not None
+        and not row.duplicate_reviewed
+        and candidate is not None
+        else None
+    )
     return TransactionOut(
         id=row.id,
         account_id=row.account_id,
@@ -151,5 +186,8 @@ def _to_schema(row: Transaction, settings: Settings) -> TransactionOut:
             None if row.category_confidence is None else str(row.category_confidence)
         ),
         needs_review=needs_review,
+        possible_duplicate_of=row.possible_duplicate_of,
+        duplicate_candidate=duplicate_candidate,
+        removed=row.removed_at is not None,
         created_at=row.created_at,
     )

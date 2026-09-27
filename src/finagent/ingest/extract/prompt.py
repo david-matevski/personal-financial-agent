@@ -64,6 +64,18 @@ amount itself unsigned.
 string exactly as printed, or null if the statement doesn't print one per \
 line.
 
+## Known accounts
+
+The user message may list accounts already on record, each with an issuer,
+last 4 digits, account type, and account name. If this statement's last 4 \
+digits and account type match one of those listed accounts, report that \
+account's issuer exactly as listed, even if this statement's own letterhead \
+or product branding spells it slightly differently (e.g. the listed account \
+says "TD" but this statement's letterhead says "TD Bank" -- report "TD"). \
+This keeps one physical account from splitting into two on record. If no \
+listed account matches by last 4 + type, transcribe the issuer as printed, \
+as usual.
+
 ## Missing years
 
 Many statements print transaction dates without a year (e.g. "MAR 15"). \

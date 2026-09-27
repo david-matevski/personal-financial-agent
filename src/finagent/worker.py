@@ -24,6 +24,7 @@ from finagent.db.repository import (
     claim_next_upload,
     complete_upload,
     fail_upload,
+    list_known_accounts,
     list_uncategorized_transaction_ids_for_statement,
     requeue_stale_processing,
     save_extraction,
@@ -145,7 +146,11 @@ class UploadWorker:
         file_sha256: str,
         extractor: StatementExtractor,
     ) -> None:
-        result = extract_statement(filename, data, extractor)
+        with self._session_factory() as session:
+            known_accounts = list_known_accounts(session)
+            session.rollback()  # read-only lookup, nothing to commit
+
+        result = extract_statement(filename, data, extractor, known_accounts=known_accounts)
         with self._session_factory() as session:
             saved = save_extraction(
                 session,

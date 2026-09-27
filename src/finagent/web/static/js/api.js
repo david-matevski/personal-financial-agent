@@ -138,6 +138,13 @@ export function categorizeNow({ include_ai, after_id } = {}) {
   return request(`/transactions/categorize${qs ? `?${qs}` : ""}`, { method: "POST" });
 }
 
+export function resolveDuplicate(id, action) {
+  return request(`/transactions/${encodeURIComponent(id)}/duplicate`, {
+    method: "POST",
+    body: { action },
+  });
+}
+
 export function getCategorySummary(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

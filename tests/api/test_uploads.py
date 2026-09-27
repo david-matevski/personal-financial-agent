@@ -19,6 +19,7 @@ def test_upload_new_file_is_queued(client: TestClient) -> None:
     assert body["statement_id"] is None
     assert body["statement_status"] is None
     assert body["transactions_inserted"] is None
+    assert body["transactions_skipped"] is None
     assert body["error"] is None
 
 
@@ -37,6 +38,7 @@ def test_reupload_same_bytes_is_immediately_done(client: TestClient) -> None:
     assert body["status"] == "DONE"
     assert body["statement_id"] == first_upload.json()["statement_id"]
     assert body["statement_status"] is not None
+    assert body["transactions_skipped"] == 0
 
 
 def test_empty_file_returns_400(client: TestClient) -> None:

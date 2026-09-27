@@ -16,8 +16,11 @@ from sqlalchemy.orm import Session
 
 from finagent.db.models import Account, Category, Statement, Upload
 from finagent.db.models import Transaction as TransactionRow
+from finagent.domain.account_matching import ExistingAccountRef, resolve_account_match
 from finagent.domain.hashing import transaction_hash
+from finagent.domain.models import AccountType, KnownAccount
 from finagent.domain.models import Transaction as DomainTransaction
+from finagent.domain.similarity import descriptions_are_similar
 from finagent.ingest.normalize import (
     interpret_balance,
     interpret_total,
@@ -28,6 +31,7 @@ from finagent.ingest.pipeline import ExtractionResult
 from finagent.ingest.validate import ValidationStatus
 
 _TRUSTED_STATUSES = (ValidationStatus.VERIFIED, ValidationStatus.UNVERIFIED)
+_NEAR_DUP_DAY_WINDOW = timedelta(days=3)
 
 
 @dataclass(frozen=True)
@@ -75,16 +79,33 @@ def save_extraction(
     trusted = result.status in _TRUSTED_STATUSES
 
     account_id: int | None = None
+    transactions = statement.transactions
     if trusted:
-        account_id = _upsert_account(
+        norm_issuer = normalize_issuer(extraction.issuer)
+        norm_last4 = normalize_last4(extraction.account_last4)
+        account_id, resolved_issuer = _resolve_or_create_account(
             session,
-            issuer=normalize_issuer(extraction.issuer),
-            account_last4=normalize_last4(extraction.account_last4),
+            issuer=norm_issuer,
+            account_last4=norm_last4,
             account_type=extraction.account_type,
             account_name=extraction.account_name,
             currency=extraction.currency,
             label=statement.account_label,
         )
+        if resolved_issuer != norm_issuer:
+            # Issuer-name drift (e.g. "TD" vs "TD BANK") resolved to an
+            # existing account under a different issuer spelling: relabel
+            # before hashing so these transactions dedup against that
+            # account's existing rows (AGENTS.md task spec §2b).
+            transactions = tuple(
+                tx.model_copy(
+                    update={
+                        "issuer": resolved_issuer,
+                        "account_label": f"{resolved_issuer} ****{norm_last4}",
+                    }
+                )
+                for tx in transactions
+            )
 
     statement_row = Statement(
         account_id=account_id,
@@ -103,6 +124,8 @@ def save_extraction(
         extraction=extraction_json,
         model=model,
         transactions_inserted=0,
+        transactions_skipped=0,
+        period_derived=statement.period_derived,
     )
     session.add(statement_row)
     session.flush()  # assigns statement_row.id
@@ -114,9 +137,10 @@ def save_extraction(
             session,
             account_id=account_id,
             statement_id=statement_row.id,
-            transactions=statement.transactions,
+            transactions=transactions,
         )
         statement_row.transactions_inserted = inserted
+        statement_row.transactions_skipped = skipped
 
     return SavedStatement(
         statement_id=statement_row.id,
@@ -125,6 +149,71 @@ def save_extraction(
         transactions_skipped_duplicate=skipped,
         already_imported=False,
     )
+
+
+def _resolve_or_create_account(
+    session: Session,
+    *,
+    issuer: str,
+    account_last4: str,
+    account_type: str,
+    account_name: str,
+    currency: str,
+    label: str,
+) -> tuple[int, str]:
+    """Resolve the account a statement belongs to, backstopping the model.
+
+    An exact (issuer, last4, type) match, or a single existing account with
+    the same last4 + type and a compatible issuer name (AGENTS.md task spec
+    §2b, e.g. "TD" vs "TD BANK"), is reused as-is -- no write, so a
+    compatible-but-differently-spelled match never touches the existing
+    account's stored issuer/name. Otherwise the account is upserted (created,
+    or its name refreshed on an exact match). Returns (account_id,
+    resolved_issuer): callers relabel transactions to ``resolved_issuer``
+    before hashing when it differs from the extracted ``issuer``.
+    """
+    existing = _accounts_with_last4_type(session, account_last4, account_type)
+    match = resolve_account_match(existing, issuer=issuer)
+    if match is not None and match.issuer != issuer:
+        return match.id, match.issuer
+
+    account_id = _upsert_account(
+        session,
+        issuer=issuer,
+        account_last4=account_last4,
+        account_type=account_type,
+        account_name=account_name,
+        currency=currency,
+        label=label,
+    )
+    return account_id, issuer
+
+
+def _accounts_with_last4_type(
+    session: Session, account_last4: str, account_type: str
+) -> list[ExistingAccountRef]:
+    stmt = select(Account.id, Account.issuer).where(
+        Account.account_last4 == account_last4, Account.account_type == account_type
+    )
+    return [ExistingAccountRef(id=row.id, issuer=row.issuer) for row in session.execute(stmt).all()]
+
+
+def list_known_accounts(session: Session) -> list[KnownAccount]:
+    """Every account on record, as context for the extraction model.
+
+    See ``StatementExtractor.extract``: offered in the user message so the
+    model can return the exact issuer name already on file for a statement
+    it recognizes by last4 + account type.
+    """
+    return [
+        KnownAccount(
+            issuer=row.issuer,
+            account_last4=row.account_last4,
+            account_type=AccountType(row.account_type),
+            account_name=row.account_name,
+        )
+        for row in list_accounts(session)
+    ]
 
 
 def _upsert_account(
@@ -191,7 +280,64 @@ def _insert_transactions(
     inserted_ids = session.execute(stmt).scalars().all()
     inserted = len(inserted_ids)
     skipped = len(rows) - inserted
+
+    if inserted_ids:
+        inserted_rows = list(
+            session.execute(
+                select(TransactionRow).where(TransactionRow.id.in_(inserted_ids))
+            ).scalars()
+        )
+        _flag_near_duplicates(session, inserted_rows)
+
     return inserted, skipped
+
+
+def _flag_near_duplicates(session: Session, inserted: list[TransactionRow]) -> None:
+    """Flag each newly-inserted row against pre-existing rows it might duplicate.
+
+    Exact hash duplicates never reach here (``ON CONFLICT DO NOTHING``
+    already dropped them); this catches near-duplicates -- the same
+    purchase re-transcribed slightly differently across two overlapping
+    statement imports (AGENTS.md task spec §5).
+    """
+    flagged_candidate_ids: set[int] = set()
+    for tx in inserted:
+        candidate_id = _find_duplicate_candidate(session, tx, exclude=flagged_candidate_ids)
+        if candidate_id is not None:
+            tx.possible_duplicate_of = candidate_id
+            flagged_candidate_ids.add(candidate_id)
+    session.flush()
+
+
+def _find_duplicate_candidate(
+    session: Session, tx: TransactionRow, *, exclude: set[int]
+) -> int | None:
+    """One pre-existing transaction ``tx`` might duplicate, or None.
+
+    A candidate must be on the same account, from a different statement, not
+    removed, the same amount, within +/-3 days, not already the target of
+    another flag, and have a similar-enough description (pure function in
+    ``domain.similarity``).
+    """
+    already_targeted = select(TransactionRow.possible_duplicate_of).where(
+        TransactionRow.possible_duplicate_of.isnot(None)
+    )
+    stmt = select(TransactionRow).where(
+        TransactionRow.account_id == tx.account_id,
+        TransactionRow.statement_id != tx.statement_id,
+        TransactionRow.removed_at.is_(None),
+        TransactionRow.amount == tx.amount,
+        TransactionRow.posted_date >= tx.posted_date - _NEAR_DUP_DAY_WINDOW,
+        TransactionRow.posted_date <= tx.posted_date + _NEAR_DUP_DAY_WINDOW,
+        TransactionRow.id != tx.id,
+        TransactionRow.id.notin_(already_targeted),
+    )
+    for candidate in session.execute(stmt).scalars().all():
+        if candidate.id in exclude:
+            continue
+        if descriptions_are_similar(tx.description, candidate.description):
+            return candidate.id
+    return None
 
 
 # --- Read-only lookups for the API (AGENTS.md: no business logic in routes) ---
@@ -224,6 +370,32 @@ def list_accounts(session: Session) -> list[Account]:
     return list(session.execute(select(Account).order_by(Account.id)).scalars().all())
 
 
+def find_overlapping_statements(session: Session, statement: Statement) -> list[Statement]:
+    """Other statements on the same account whose period intersects this one's.
+
+    Computed on read (AGENTS.md task spec §4), not stored: two statements
+    overlap when they share an account and their [period_start, period_end]
+    ranges intersect. A statement with no account or no period (nothing was
+    printed and nothing could be derived, e.g. a zero-transaction FAILED
+    statement) never overlaps anything.
+    """
+    if (
+        statement.account_id is None
+        or statement.period_start is None
+        or statement.period_end is None
+    ):
+        return []
+    stmt = select(Statement).where(
+        Statement.account_id == statement.account_id,
+        Statement.id != statement.id,
+        Statement.period_start.isnot(None),
+        Statement.period_end.isnot(None),
+        Statement.period_start <= statement.period_end,
+        Statement.period_end >= statement.period_start,
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
 def list_transactions(
     session: Session,
     *,
@@ -234,6 +406,8 @@ def list_transactions(
     needs_review: bool | None = None,
     review_threshold: Decimal = Decimal("0.7"),
     uncategorized: bool | None = None,
+    possible_duplicates: bool = False,
+    include_removed: bool = False,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TransactionRow]:
@@ -242,11 +416,21 @@ def list_transactions(
     ``needs_review`` matches rows that are uncategorized, or AI-categorized
     below ``review_threshold`` (the same rule as ``TransactionOut.needs_review``
     in the API schema -- kept here so GET /transactions can filter on it
-    server-side instead of the client re-deriving it per row).
+    server-side instead of the client re-deriving it per row). Removed rows
+    (a soft "remove" from ``POST /transactions/{id}/duplicate``) are excluded
+    unless ``include_removed`` is set. ``possible_duplicates`` narrows to
+    rows flagged as a near-duplicate and not yet reviewed.
     """
     stmt = select(TransactionRow).order_by(
         TransactionRow.posted_date.desc(), TransactionRow.id.desc()
     )
+    if not include_removed:
+        stmt = stmt.where(TransactionRow.removed_at.is_(None))
+    if possible_duplicates:
+        stmt = stmt.where(
+            TransactionRow.possible_duplicate_of.isnot(None),
+            TransactionRow.duplicate_reviewed.is_(False),
+        )
     if account_id is not None:
         stmt = stmt.where(TransactionRow.account_id == account_id)
     if date_from is not None:
@@ -273,6 +457,45 @@ def list_transactions(
 def get_transaction(session: Session, transaction_id: int) -> TransactionRow | None:
     """Look up a transaction by id."""
     return session.get(TransactionRow, transaction_id)
+
+
+_DUPLICATE_ACTIONS = ("keep_both", "remove", "restore")
+
+
+def apply_duplicate_action(
+    session: Session, transaction_id: int, action: str
+) -> TransactionRow | None:
+    """Apply the owner's decision on a flagged (or previously flagged) row.
+
+    ``keep_both`` clears the flag (both rows are genuine, kept as-is);
+    ``remove`` soft-removes this row (``removed_at`` set; nothing is ever
+    hard-deleted, AGENTS.md task spec §5); ``restore`` un-removes it. Returns
+    None for an unknown transaction id (-> 404 at the route); raises
+    ``ValueError`` for an unknown action (-> 422 at the route). The route
+    itself contains no logic (AGENTS.md §3).
+    """
+    if action not in _DUPLICATE_ACTIONS:
+        raise ValueError(f"Unknown duplicate action: {action!r}")
+
+    row = session.get(TransactionRow, transaction_id)
+    if row is None:
+        return None
+
+    if action == "keep_both":
+        row.possible_duplicate_of = None
+        row.duplicate_reviewed = True
+    elif action == "remove":
+        row.removed_at = datetime.now(timezone.utc)
+        row.duplicate_reviewed = True
+    else:  # restore
+        row.removed_at = None
+        # Undo means "back to undecided": if the row is still linked to a
+        # candidate, re-open the question so Keep both / Remove reappear.
+        if row.possible_duplicate_of is not None:
+            row.duplicate_reviewed = False
+
+    session.flush()
+    return row
 
 
 def set_transaction_category_by_user(
@@ -365,6 +588,7 @@ def category_summary(
             func.count().label("count"),
         )
         .outerjoin(Category, TransactionRow.category_id == Category.id)
+        .where(TransactionRow.removed_at.is_(None))
         .group_by(TransactionRow.category_id, Category.name)
         .order_by(money_out_expr.desc())
     )

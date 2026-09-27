@@ -4,6 +4,7 @@ Sign convention (AGENTS.md §3): positive amount = money out (purchases,
 fees); negative amount = money in (payments, refunds, income).
 """
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from enum import Enum
@@ -88,3 +89,26 @@ class ParsedStatement(BaseModel):
     ``validate.py`` folds these into ``ValidationResult.problems`` purely
     for visibility.
     """
+    period_derived: bool = False
+    """True when ``period_start``/``period_end`` (or one of them) weren't
+    printed on the statement and were instead derived from the min/max
+    transaction posted date. Validation's date-window check must not run
+    against a derived period -- it would trivially pass.
+    """
+
+
+@dataclass(frozen=True)
+class KnownAccount:
+    """One account already on record, offered to the extractor as context.
+
+    Lets the model return the exact issuer name already on file (e.g. "TD"
+    rather than "TD BANK") when a statement's last 4 digits and account type
+    match an account the owner has imported before, so accounts don't drift
+    apart into duplicates. ``db.repository.list_known_accounts`` builds
+    these from the ``accounts`` table.
+    """
+
+    issuer: str
+    account_last4: str
+    account_type: AccountType
+    account_name: str

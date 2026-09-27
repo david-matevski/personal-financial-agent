@@ -152,14 +152,27 @@ def normalize(extraction: StatementExtraction) -> ParsedStatement:
             f"direction corrected from printed marker on {corrected_count} transaction{plural}",
         )
 
+    period_start = parse_optional_iso_date(extraction.period_start)
+    period_end = parse_optional_iso_date(extraction.period_end)
+    period_derived = False
+    if (period_start is None or period_end is None) and transactions:
+        posted_dates = [tx.posted_date for tx in transactions]
+        if period_start is None:
+            period_start = min(posted_dates)
+            period_derived = True
+        if period_end is None:
+            period_end = max(posted_dates)
+            period_derived = True
+
     return ParsedStatement(
         issuer=extraction.issuer,
         account_name=extraction.account_name,
         account_label=account_label,
         account_type=account_type,
         currency=extraction.currency,
-        period_start=parse_optional_iso_date(extraction.period_start),
-        period_end=parse_optional_iso_date(extraction.period_end),
+        period_start=period_start,
+        period_end=period_end,
         transactions=tuple(transactions),
         notes=notes,
+        period_derived=period_derived,
     )

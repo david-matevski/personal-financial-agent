@@ -27,11 +27,12 @@ function renderDetail(container, statement, accountsById) {
   panel.appendChild(el("h2", { text: statement.filename }));
 
   const dl = el("dl");
+  const periodText = `${formatDate(statement.period_start)} – ${formatDate(statement.period_end)}`;
   const rows = [
     ["Account", accountLabel(accountsById, statement.account_id)],
     ["Status", statement.status],
     ["Attempts", String(statement.attempts ?? 0)],
-    ["Period", `${formatDate(statement.period_start)} – ${formatDate(statement.period_end)}`],
+    ["Period", statement.period_derived ? `${periodText} (from transaction dates)` : periodText],
     ["Opening balance", statement.opening_balance != null ? formatMoney(statement.opening_balance, "CAD") : "—"],
     ["Closing balance", statement.closing_balance != null ? formatMoney(statement.closing_balance, "CAD") : "—"],
     ["Total money out", statement.total_money_out != null ? formatMoney(statement.total_money_out, "CAD") : "—"],
@@ -40,11 +41,24 @@ function renderDetail(container, statement, accountsById) {
     ["Model", statement.model || "—"],
     ["Uploaded", formatDateTime(statement.created_at)],
   ];
+  if (statement.transactions_skipped) {
+    rows.push(["Already imported", `${statement.transactions_skipped} transactions`]);
+  }
   for (const [term, value] of rows) {
     dl.appendChild(el("dt", { text: term }));
     dl.appendChild(el("dd", { text: value }));
   }
   panel.appendChild(dl);
+
+  if (statement.overlaps && statement.overlaps.length) {
+    panel.appendChild(el("h3", { text: "Overlapping statements" }));
+    const list = el("ul", { class: "problems-list" });
+    for (const overlap of statement.overlaps) {
+      const label = `${overlap.filename} (${formatDate(overlap.period_start)} – ${formatDate(overlap.period_end)})`;
+      list.appendChild(el("li", {}, [el("a", { href: `#/statements/${overlap.statement_id}`, text: label })]));
+    }
+    panel.appendChild(list);
+  }
 
   if (statement.problems && statement.problems.length) {
     panel.appendChild(el("h3", { text: "Problems" }));
@@ -104,17 +118,21 @@ export async function render(root, { statementId } = {}) {
       el("th", { text: "Period" }),
       el("th", { text: "Status" }),
       el("th", { text: "Transactions" }),
+      el("th", { text: "Overlaps" }),
       el("th", { text: "Uploaded" }),
     ]),
   ]);
   const tbody = el("tbody");
   for (const statement of statements) {
+    const periodText = `${formatDate(statement.period_start)} – ${formatDate(statement.period_end)}`;
+    const overlapCount = statement.overlaps ? statement.overlaps.length : 0;
     const row = el("tr", { class: "is-clickable", tabindex: "0", role: "button" }, [
       el("td", { class: "filename-cell", text: statement.filename }),
       el("td", { text: accountLabel(accountsById, statement.account_id) }),
-      el("td", { text: `${formatDate(statement.period_start)} – ${formatDate(statement.period_end)}` }),
+      el("td", { text: statement.period_derived ? `${periodText} (from transaction dates)` : periodText }),
       el("td", {}, [statusBadge(statement.status)]),
       el("td", { text: String(statement.transactions_inserted ?? 0) }),
+      el("td", { text: overlapCount > 0 ? `Overlaps ${overlapCount}` : "—" }),
       el("td", { text: formatDateTime(statement.created_at) }),
     ]);
     const open = async () => {

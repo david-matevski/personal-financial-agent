@@ -85,6 +85,7 @@ def _to_out(row: Upload) -> UploadOut:
         statement_id=row.statement_id,
         statement_status=statement.status if statement is not None else None,
         transactions_inserted=statement.transactions_inserted if statement is not None else None,
+        transactions_skipped=statement.transactions_skipped if statement is not None else None,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

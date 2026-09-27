@@ -108,6 +108,52 @@ def test_extraction_error_from_extractor_returns_502(client: TestClient) -> None
     assert "boom" not in response.text
 
 
+def test_statement_summary_includes_period_derived_and_skipped_fields(
+    client: TestClient,
+) -> None:
+    extractor = FakeExtractor([make_extraction()])
+    client.app.dependency_overrides[get_extractor] = lambda: extractor
+
+    response = client.post("/statements", files={"file": ("statement.csv", _CSV_BYTES, "text/csv")})
+    statement_id = response.json()["statement_id"]
+
+    detail = client.get(f"/statements/{statement_id}").json()
+    assert detail["period_derived"] is False  # make_extraction prints a period
+    assert detail["transactions_skipped"] == 0
+    assert detail["overlaps"] == []
+
+
+def test_overlapping_statements_are_listed_on_both(client: TestClient) -> None:
+    first_extractor = FakeExtractor([make_extraction()])
+    client.app.dependency_overrides[get_extractor] = lambda: first_extractor
+    first = client.post("/statements", files={"file": ("jan.csv", _CSV_BYTES, "text/csv")})
+    first_id = first.json()["statement_id"]
+
+    second_extraction = make_extraction(
+        period_start="2026-01-20",
+        period_end="2026-02-20",
+        closing_balance="102.00",
+        transactions=[
+            {
+                "posted_date": "2026-02-01",
+                "description": "Fictional Streaming Co",
+                "amount": "2.00",
+                "direction": "OUT",
+            }
+        ],
+    )
+    second_extractor = FakeExtractor([second_extraction])
+    client.app.dependency_overrides[get_extractor] = lambda: second_extractor
+    second = client.post("/statements", files={"file": ("feb.csv", _CSV_BYTES + b"x", "text/csv")})
+    second_id = second.json()["statement_id"]
+
+    first_detail = client.get(f"/statements/{first_id}").json()
+    second_detail = client.get(f"/statements/{second_id}").json()
+
+    assert [o["statement_id"] for o in first_detail["overlaps"]] == [second_id]
+    assert [o["statement_id"] for o in second_detail["overlaps"]] == [first_id]
+
+
 def test_unsupported_statement_format_returns_415(client: TestClient) -> None:
     extractor = FakeExtractor([make_extraction()])
     client.app.dependency_overrides[get_extractor] = lambda: extractor

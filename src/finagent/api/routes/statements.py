@@ -11,12 +11,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, Up
 from sqlalchemy.orm import Session
 
 from finagent.api.deps import get_db, get_extractor, require_auth
-from finagent.api.schemas import StatementDetail, StatementSummary, UploadResponse
+from finagent.api.schemas import OverlapOut, StatementDetail, StatementSummary, UploadResponse
 from finagent.core.config import Settings, get_settings
 from finagent.db.models import Statement
 from finagent.db.repository import (
+    find_overlapping_statements,
     get_statement,
     get_statement_by_sha256,
+    list_known_accounts,
     list_statements,
     save_extraction,
 )
@@ -70,10 +72,11 @@ def upload_statement(
             already_imported=True,
         )
 
+    known_accounts = list_known_accounts(session)
     # End the read-only transaction before the slow (30-90s) model call so
     # the pooled connection isn't held idle-in-transaction meanwhile.
     session.commit()
-    result = extract_statement(filename, data, extractor)
+    result = extract_statement(filename, data, extractor, known_accounts=known_accounts)
     saved = save_extraction(
         session,
         filename=filename,
@@ -103,7 +106,7 @@ def list_statements_route(
 ) -> list[StatementSummary]:
     """List statements, newest first, optionally filtered by status."""
     rows = list_statements(session, status=status, limit=limit, offset=offset)
-    return [_to_summary(row) for row in rows]
+    return [_to_summary(session, row) for row in rows]
 
 
 @router.get("/statements/{statement_id}", response_model=StatementDetail)
@@ -116,10 +119,11 @@ def get_statement_route(
     row = get_statement(session, statement_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Statement not found")
-    return _to_detail(row, include_extraction=include_extraction)
+    return _to_detail(session, row, include_extraction=include_extraction)
 
 
-def _to_summary(row: Statement) -> StatementSummary:
+def _to_summary(session: Session, row: Statement) -> StatementSummary:
+    overlaps = find_overlapping_statements(session, row)
     return StatementSummary(
         id=row.id,
         account_id=row.account_id,
@@ -131,18 +135,29 @@ def _to_summary(row: Statement) -> StatementSummary:
         problems=list(row.problems),
         period_start=row.period_start,
         period_end=row.period_end,
+        period_derived=row.period_derived,
         opening_balance=_str_or_none(row.opening_balance),
         closing_balance=_str_or_none(row.closing_balance),
         total_money_out=_str_or_none(row.total_money_out),
         total_money_in=_str_or_none(row.total_money_in),
         model=row.model,
         transactions_inserted=row.transactions_inserted,
+        transactions_skipped=row.transactions_skipped,
+        overlaps=[
+            OverlapOut(
+                statement_id=other.id,
+                filename=other.filename,
+                period_start=other.period_start,
+                period_end=other.period_end,
+            )
+            for other in overlaps
+        ],
         created_at=row.created_at,
     )
 
 
-def _to_detail(row: Statement, *, include_extraction: bool) -> StatementDetail:
-    summary = _to_summary(row)
+def _to_detail(session: Session, row: Statement, *, include_extraction: bool) -> StatementDetail:
+    summary = _to_summary(session, row)
     return StatementDetail(
         **summary.model_dump(),
         extraction=row.extraction if include_extraction else None,

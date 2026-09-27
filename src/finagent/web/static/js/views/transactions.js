@@ -24,16 +24,116 @@ function formatConfidence(confidence) {
   return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 0 }).format(value);
 }
 
+// Merges the transaction row returned by POST /transactions/{id}/duplicate
+// back onto the local `tx` object, so every field (removed, duplicate
+// candidate, category, etc.) stays in sync with the server.
+function applyDuplicateUpdate(tx, updated) {
+  Object.assign(tx, updated);
+}
+
 // Renders the Status cell for one transaction into `cell` (cleared first).
 // Called both at initial row build and after any update (category change,
-// single confirm, bulk confirm), so every path shows the same states:
+// single confirm, bulk confirm, duplicate resolution), so every path shows
+// the same states, in precedence order:
+//   - removed (this session or from the server): dimmed row, Undo button
+//   - possible duplicate (flagged, not yet reviewed): warning badge, a
+//     compact line describing the match, and Keep both / Remove buttons
 //   - uncategorized: nothing to confirm
 //   - needs review (AI, low confidence or otherwise flagged): a badge plus
 //     a compact Confirm button that marks the AI's guess correct in place
 //   - AI, confident: muted "AI · NN%"
 //   - set or confirmed by the owner: muted "✓ You"
-function renderStatusCell(cell, tx, onChanged) {
+function renderStatusCell(cell, tx, onChanged, rowEl) {
   clear(cell);
+
+  if (tx.removed) {
+    if (rowEl) rowEl.classList.add("row-removed");
+    const errorNote = el("span", { class: "status-error", role: "alert" });
+    const undoBtn = el("button", {
+      type: "button",
+      class: "btn btn--small",
+      text: "Undo",
+      "aria-label": `Undo removing ${tx.description}`,
+    });
+    undoBtn.addEventListener("click", async () => {
+      undoBtn.disabled = true;
+      errorNote.textContent = "";
+      try {
+        const updated = await api.resolveDuplicate(tx.id, "restore");
+        applyDuplicateUpdate(tx, updated);
+        renderStatusCell(cell, tx, onChanged, rowEl);
+        onChanged(tx);
+      } catch (err) {
+        errorNote.textContent = err.message || "Could not undo.";
+        undoBtn.disabled = false;
+      }
+    });
+    cell.appendChild(el("div", { class: "status-review" }, [badge("Removed", "neutral"), undoBtn, errorNote]));
+    return;
+  }
+  if (rowEl) rowEl.classList.remove("row-removed");
+
+  if (tx.duplicate_candidate) {
+    const candidate = tx.duplicate_candidate;
+    const errorNote = el("span", { class: "status-error", role: "alert" });
+    const keepBtn = el("button", {
+      type: "button",
+      class: "btn btn--small",
+      text: "Keep both",
+      "aria-label": `Keep both, this is not a duplicate of ${tx.description}`,
+    });
+    const removeBtn = el("button", {
+      type: "button",
+      class: "btn btn--small",
+      text: "Remove",
+      "aria-label": `Remove ${tx.description} as a duplicate`,
+    });
+    const setBusy = (busy) => {
+      keepBtn.disabled = busy;
+      removeBtn.disabled = busy;
+    };
+    keepBtn.addEventListener("click", async () => {
+      setBusy(true);
+      errorNote.textContent = "";
+      try {
+        const updated = await api.resolveDuplicate(tx.id, "keep_both");
+        applyDuplicateUpdate(tx, updated);
+        renderStatusCell(cell, tx, onChanged, rowEl);
+        onChanged(tx);
+      } catch (err) {
+        errorNote.textContent = err.message || "Could not update.";
+        setBusy(false);
+      }
+    });
+    removeBtn.addEventListener("click", async () => {
+      setBusy(true);
+      errorNote.textContent = "";
+      try {
+        const updated = await api.resolveDuplicate(tx.id, "remove");
+        applyDuplicateUpdate(tx, updated);
+        renderStatusCell(cell, tx, onChanged, rowEl);
+        onChanged(tx);
+      } catch (err) {
+        errorNote.textContent = err.message || "Could not remove.";
+        setBusy(false);
+      }
+    });
+    const matchLine = el("div", { class: "duplicate-match" }, [
+      `Matches ${formatDate(candidate.posted_date)} · `,
+      el("span", { class: "duplicate-match__desc", title: candidate.description, text: candidate.description }),
+      ` · ${formatMoney(candidate.amount, tx.currency)}`,
+    ]);
+    cell.appendChild(
+      el("div", { class: "status-review status-review--duplicate" }, [
+        badge("Possible duplicate", "warn"),
+        matchLine,
+        el("div", { class: "status-review__actions" }, [keepBtn, removeBtn]),
+        errorNote,
+      ])
+    );
+    return;
+  }
+
   if (tx.category_id == null) {
     cell.appendChild(el("span", { class: "status-muted", text: "Not categorized" }));
     return;
@@ -88,6 +188,7 @@ function renderTotals(container, rows) {
   let out = 0;
   let inn = 0;
   for (const tx of rows) {
+    if (tx.removed) continue;
     const value = parseAmount(tx.amount);
     if (value == null) continue;
     if (value >= 0) out += value;
@@ -133,7 +234,6 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
   const select = buildCategorySelect(tx, categories);
   const savedNote = el("span", { class: "save-note", role: "status" });
   const statusCell = el("td", { class: "status-cell" });
-  renderStatusCell(statusCell, tx, onCategoryChange);
 
   select.addEventListener("change", async () => {
     const previousValue = tx.category_id != null ? String(tx.category_id) : "";
@@ -150,7 +250,7 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
       tx.category_confidence = updated.category_confidence;
       tx.needs_review = updated.needs_review;
       savedNote.textContent = "Saved";
-      renderStatusCell(statusCell, tx, onCategoryChange);
+      renderStatusCell(statusCell, tx, onCategoryChange, tr);
       onCategoryChange(tx);
     } catch (err) {
       select.value = previousValue;
@@ -166,7 +266,7 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
     el("div", { class: "category-cell__meta" }, [savedNote]),
   ]);
 
-  return el("tr", {}, [
+  const tr = el("tr", {}, [
     el("td", { text: formatDate(tx.posted_date || tx.transaction_date) }),
     el("td", { class: "description-cell", text: tx.description }),
     el("td", { text: accountLabel(accountsById, tx.account_id) }),
@@ -174,6 +274,8 @@ function buildRow(tx, accountsById, categories, onCategoryChange) {
     statusCell,
     amountCell,
   ]);
+  renderStatusCell(statusCell, tx, onCategoryChange, tr);
+  return tr;
 }
 
 function renderTable(container, rows, accountsById, categories, onCategoryChange) {
@@ -229,6 +331,7 @@ export async function render(root, { params } = {}) {
   const initialDateFrom = params?.get("date_from") || "";
   const initialDateTo = params?.get("date_to") || "";
   const initialNeedsReview = params?.get("needs_review") === "true";
+  const initialPossibleDuplicates = params?.get("possible_duplicates") === "true";
 
   const accountSelect = el("select", { id: "filter-account" }, [
     el("option", { value: "", text: "All accounts" }),
@@ -248,6 +351,8 @@ export async function render(root, { params } = {}) {
   const searchInput = el("input", { type: "search", id: "filter-search", placeholder: "Search description…" });
   const reviewCheckbox = el("input", { type: "checkbox", id: "filter-needs-review" });
   reviewCheckbox.checked = initialNeedsReview;
+  const possibleDuplicatesCheckbox = el("input", { type: "checkbox", id: "filter-possible-duplicates" });
+  possibleDuplicatesCheckbox.checked = initialPossibleDuplicates;
 
   const filters = el("div", { class: "filters card" }, [
     el("div", { class: "field" }, [el("label", { for: "filter-account", text: "Account" }), accountSelect]),
@@ -259,6 +364,12 @@ export async function render(root, { params } = {}) {
       el("label", { for: "filter-needs-review", class: "checkbox-label" }, [
         reviewCheckbox,
         el("span", { text: "Needs review only" }),
+      ]),
+    ]),
+    el("div", { class: "field field--checkbox" }, [
+      el("label", { for: "filter-possible-duplicates", class: "checkbox-label" }, [
+        possibleDuplicatesCheckbox,
+        el("span", { text: "Possible duplicates only" }),
       ]),
     ]),
   ]);
@@ -299,6 +410,7 @@ export async function render(root, { params } = {}) {
       category_id: catValue && catValue !== UNCATEGORIZED_VALUE ? catValue : undefined,
       uncategorized: catValue === UNCATEGORIZED_VALUE ? "true" : undefined,
       needs_review: reviewCheckbox.checked ? "true" : undefined,
+      possible_duplicates: possibleDuplicatesCheckbox.checked ? "true" : undefined,
     };
   }
 
@@ -308,7 +420,7 @@ export async function render(root, { params } = {}) {
   }
 
   function confirmableRows(rows) {
-    return rows.filter((tx) => tx.needs_review && tx.category_id != null);
+    return rows.filter((tx) => tx.needs_review && tx.category_id != null && !tx.removed);
   }
 
   function updateBulkButton(filtered) {
@@ -367,6 +479,7 @@ export async function render(root, { params } = {}) {
   accountSelect.addEventListener("change", () => loadPage({ reset: true }));
   categorySelect.addEventListener("change", () => loadPage({ reset: true }));
   reviewCheckbox.addEventListener("change", () => loadPage({ reset: true }));
+  possibleDuplicatesCheckbox.addEventListener("change", () => loadPage({ reset: true }));
   dateFromInput.addEventListener("change", () => loadPage({ reset: true }));
   dateToInput.addEventListener("change", () => loadPage({ reset: true }));
   searchInput.addEventListener("input", () => redraw());

@@ -4,6 +4,9 @@ Kept separate from conftest.py so plain modules (not just fixtures) can
 import them without pulling in pytest fixture machinery.
 """
 
+from collections.abc import Sequence
+
+from finagent.domain.models import KnownAccount
 from finagent.ingest.document import SourceDocument
 from finagent.ingest.extract.schema import StatementExtraction
 
@@ -13,7 +16,9 @@ class FakeExtractor:
 
     Records every call (filename, feedback) so tests can assert the
     extractor was -- or crucially, was *not* -- invoked (e.g. re-uploading
-    an already-imported file must not call it again).
+    an already-imported file must not call it again). ``known_accounts``
+    passed to each call is recorded separately in ``known_accounts_calls``,
+    for tests that need to check account-pinning context was sent.
     """
 
     def __init__(
@@ -24,9 +29,16 @@ class FakeExtractor:
         self._results = results or []
         self._error = error
         self.calls: list[tuple[str, str | None]] = []
+        self.known_accounts_calls: list[Sequence[KnownAccount]] = []
 
-    def extract(self, doc: SourceDocument, feedback: str | None = None) -> StatementExtraction:
+    def extract(
+        self,
+        doc: SourceDocument,
+        feedback: str | None = None,
+        known_accounts: Sequence[KnownAccount] = (),
+    ) -> StatementExtraction:
         self.calls.append((doc.filename, feedback))
+        self.known_accounts_calls.append(known_accounts)
         if self._error is not None:
             raise self._error
         return self._results[min(len(self.calls) - 1, len(self._results) - 1)]

@@ -8,6 +8,7 @@ import httpx2
 import pytest
 
 from finagent.core.errors import ExtractionError
+from finagent.domain.models import AccountType, KnownAccount
 from finagent.ingest.document import DocumentKind, SourceDocument
 from finagent.ingest.extract.anthropic import AnthropicStatementExtractor
 from finagent.ingest.extract.prompt import SYSTEM_PROMPT
@@ -127,6 +128,43 @@ def test_feedback_is_included_in_the_request() -> None:
 
     text_block = captured["messages"][0]["content"][1]["text"]
     assert "transactions summed to 5.00" in text_block
+
+
+def test_known_accounts_are_included_in_the_user_message_not_the_system_prompt() -> None:
+    captured: dict[str, Any] = {}
+    client = _FakeClient(_FakeMessages(_message("end_turn", _PARSED), captured))
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
+
+    extractor.extract(
+        _pdf_doc(),
+        known_accounts=[
+            KnownAccount(
+                issuer="TD",
+                account_last4="1234",
+                account_type=AccountType.CREDIT,
+                account_name="TD Visa",
+            )
+        ],
+    )
+
+    text_block = captured["messages"][0]["content"][1]["text"]
+    assert "issuer=TD" in text_block
+    assert "last4=1234" in text_block
+    # The system prompt must stay static (cache-stable) regardless of the
+    # known accounts passed in -- it never contains their data.
+    assert captured["system"][0]["text"] == SYSTEM_PROMPT
+    assert "TD Visa" not in SYSTEM_PROMPT
+
+
+def test_no_known_accounts_omits_the_section_entirely() -> None:
+    captured: dict[str, Any] = {}
+    client = _FakeClient(_FakeMessages(_message("end_turn", _PARSED), captured))
+    extractor = AnthropicStatementExtractor(client=client, model="claude-opus-5-5", effort="high")  # type: ignore[arg-type]
+
+    extractor.extract(_pdf_doc())
+
+    text_block = captured["messages"][0]["content"][1]["text"]
+    assert "Known accounts" not in text_block
 
 
 def test_max_tokens_stop_raises_extraction_error() -> None:

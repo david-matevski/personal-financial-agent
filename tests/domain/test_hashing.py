@@ -1,5 +1,6 @@
 """Tests for finagent.domain.hashing."""
 
+import hashlib
 from datetime import date
 from decimal import Decimal
 
@@ -89,6 +90,65 @@ def test_debit_hash_ignores_row_sequence_field() -> None:
     tx_a = _debit_tx(row_sequence=0)
     tx_b = _debit_tx(row_sequence=1)
     assert transaction_hash(tx_a) == transaction_hash(tx_b)
+
+
+def test_debit_without_running_balance_falls_back_to_row_sequence() -> None:
+    """A DEBIT statement that prints no running balance (running_balance=None)
+    must not hash two identical same-day purchases to the same value --
+    that would silently drop one as a "duplicate" (the bug this task fixes).
+    """
+    tx_a = _debit_tx(running_balance=None, row_sequence=0)
+    tx_b = _debit_tx(running_balance=None, row_sequence=1)
+    assert transaction_hash(tx_a) != transaction_hash(tx_b)
+
+
+def test_debit_without_running_balance_same_row_sequence_collides() -> None:
+    # Sanity check on the fallback key itself: same row_sequence -> same hash.
+    tx_a = _debit_tx(running_balance=None, row_sequence=0)
+    tx_b = _debit_tx(running_balance=None, row_sequence=0)
+    assert transaction_hash(tx_a) == transaction_hash(tx_b)
+
+
+def test_debit_hash_with_balance_present_is_unchanged_by_the_fix() -> None:
+    """Pinned regression value: a DEBIT hash with a printed running balance
+    must be byte-for-byte identical to what it was before this fix, computed
+    independently from the documented hash-input format (AGENTS.md §3), so
+    the fix can never silently change dedup for existing, already-imported
+    data.
+    """
+    tx = _debit_tx(running_balance=Decimal("1000.00"))
+    expected_input = "|".join(
+        [
+            "TD",
+            "DEBIT",
+            "CHEQUING 1234",
+            "2024-01-15",
+            "4.50",
+            "1000.00",
+        ]
+    )
+    expected = hashlib.sha256(expected_input.encode("utf-8")).hexdigest()
+    assert transaction_hash(tx) == expected
+
+
+def test_credit_hash_is_unchanged_by_the_fix() -> None:
+    """Pinned regression value: a CREDIT hash, computed independently from
+    the documented hash-input format, must be untouched by the DEBIT-only
+    fix in this task.
+    """
+    tx = _credit_tx(row_sequence=0)
+    expected_input = "|".join(
+        [
+            "AMEX",
+            "CREDIT",
+            "GOLD CARD 1234",
+            "2024-01-15",
+            "4.50",
+            "0",
+        ]
+    )
+    expected = hashlib.sha256(expected_input.encode("utf-8")).hexdigest()
+    assert transaction_hash(tx) == expected
 
 
 def test_assign_row_sequences_numbers_duplicates_in_order() -> None:

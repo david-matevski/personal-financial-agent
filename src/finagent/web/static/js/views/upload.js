@@ -13,7 +13,11 @@ function statusText(upload) {
   if (upload.status === "DONE") {
     if (upload.statement_status === "VERIFIED") {
       const n = upload.transactions_inserted ?? 0;
-      return { text: `Verified · ${n} transaction${n === 1 ? "" : "s"} added`, tone: "ok" };
+      let text = `Verified · ${n} new transaction${n === 1 ? "" : "s"}`;
+      if (upload.transactions_skipped) {
+        text += ` · ${upload.transactions_skipped} already imported`;
+      }
+      return { text, tone: "ok" };
     }
     if (upload.statement_status === "UNVERIFIED") {
       return { text: "Imported, unverified (no printed totals to check against)", tone: "warn" };
