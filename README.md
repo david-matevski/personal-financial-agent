@@ -142,13 +142,13 @@ assignments. To run pytest with the test database:
 
 ```powershell
 # PowerShell
-$env:FINAGENT_DATABASE_URL="postgresql+psycopg://postgres:@127.0.0.1:<port>/finagent_test"
+$env:FINAGENT_DATABASE_URL="postgresql+psycopg://postgres:@127.0.0.1:54329/finagent_test"
 pytest
 ```
 
 ```bash
 # bash
-export FINAGENT_DATABASE_URL="postgresql+psycopg://postgres:@127.0.0.1:<port>/finagent_test"
+export FINAGENT_DATABASE_URL="postgresql+psycopg://postgres:@127.0.0.1:54329/finagent_test"
 pytest
 ```
 

@@ -1,65 +1,119 @@
 #!/usr/bin/env python3
-"""
-Start or reuse a local PostgreSQL server for development and testing.
+"""Start or reuse a local PostgreSQL server for development and testing.
 
-This script manages a local PostgreSQL instance in the build/pgdata directory.
-It creates two databases: finagent (for the app) and finagent_test (for pytest).
+Runs the PostgreSQL 16 binaries bundled with the ``pgserver`` package (extra
+``localdb``) from ``build/pgdata`` -- no system install or Docker needed. It
+creates two databases: ``finagent`` (for the app) and ``finagent_test`` (for
+pytest, which drops and recreates its schema).
 
 Usage:
-  python scripts/dev_db.py           # Start/reuse server and print connection strings
-  python scripts/dev_db.py --stop    # Stop the server (data persists)
+  python scripts/dev_db.py           # start or reuse the server, print URLs
+  python scripts/dev_db.py --stop    # stop the server (data persists)
 
-Prints two environment variable lines ready to use:
-  FINAGENT_DATABASE_URL=postgresql+psycopg://...finagent
-  FINAGENT_DATABASE_URL=postgresql+psycopg://...finagent_test (for pytest)
+The server always listens on 127.0.0.1:54329 (override with
+FINAGENT_DEV_DB_PORT), so connection URLs stay the same across restarts.
+pgserver's own start-up is not used: it picks a random port each time and
+gives up after 10 seconds, which is shorter than crash recovery after an
+unclean shutdown (e.g. the PC restarting while the server was running).
 """
 
+import os
+import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
-
-# Check pgserver is installed
-try:
-    import pgserver
-except ImportError:
-    print(
-        "Error: pgserver is not installed.\nInstall it with: pip install -e .[localdb]",
-        file=sys.stderr,
-    )
-    sys.exit(1)
 
 try:
     import psycopg
+    from pgserver._commands import POSTGRES_BIN_PATH
 except ImportError:
     print(
-        "Error: psycopg is not installed.\nInstall it with: pip install -e .",
+        "Error: the local database tools are not installed.\n"
+        'Install them with: pip install -e ".[dev,localdb]"',
         file=sys.stderr,
     )
     sys.exit(1)
 
-
 APP_DB = "finagent"
 TEST_DB = "finagent_test"
-SQLALCHEMY_DRIVER = "postgresql+psycopg"
+USER = "postgres"
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("FINAGENT_DEV_DB_PORT", "54329"))
+# Crash recovery after an unclean shutdown can take well over a minute.
+START_TIMEOUT_SECONDS = 180
+
+BUILD_DIR = (Path(__file__).parent.parent / "build").resolve()
+PGDATA = BUILD_DIR / "pgdata"
+# Outside the data directory: a log file inside it can be held open by one
+# process while recovery tries to open it, failing with a sharing violation.
+LOGFILE = BUILD_DIR / "pgdata.log"
 
 
-def get_pgdata_path() -> Path:
-    """Get the absolute path to the pgdata directory."""
-    repo_root = Path(__file__).parent.parent
-    pgdata = repo_root / "build" / "pgdata"
-    return pgdata.resolve()
+def _bin(name: str) -> str:
+    return str(Path(POSTGRES_BIN_PATH) / name)
 
 
-def with_database(uri: str, database: str, *, driver: str = "postgresql") -> str:
-    """Return ``uri`` pointing at ``database``, keeping user, host and port."""
-    parts = urlsplit(uri)
-    return urlunsplit((driver, parts.netloc, f"/{database}", parts.query, ""))
+def _pg_ctl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [_bin("pg_ctl"), "-D", str(PGDATA), *args], capture_output=True, text=True
+    )
 
 
-def ensure_databases(uri: str, names: tuple[str, ...]) -> None:
-    """Create each database in ``names`` that doesn't exist yet."""
-    with psycopg.connect(with_database(uri, "postgres"), autocommit=True) as conn:
-        for name in names:
+def running_port() -> int | None:
+    """Port of the server running on PGDATA, or None if it isn't running."""
+    if _pg_ctl("status").returncode != 0:
+        return None
+    # postmaster.pid line 4 is the port the running server listens on.
+    lines = (PGDATA / "postmaster.pid").read_text().splitlines()
+    return int(lines[3])
+
+
+def initialize() -> None:
+    """Create the data directory on first use."""
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [_bin("initdb"), "-D", str(PGDATA), "-U", USER, "--auth=trust", "-E", "UTF8"],
+        check=True,
+        capture_output=True,
+    )
+
+
+def start() -> None:
+    # Output is not captured: the postmaster pg_ctl launches inherits any
+    # pipes we open and keeps them open, so capturing would block forever
+    # (on Windows). Everything useful goes to LOGFILE anyway.
+    result = subprocess.run(
+        [
+            _bin("pg_ctl"),
+            "-D",
+            str(PGDATA),
+            "-l",
+            str(LOGFILE),
+            "-o",
+            f"-h {HOST} -p {PORT}",
+            "-w",
+            "-t",
+            str(START_TIMEOUT_SECONDS),
+            "start",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        tail = LOGFILE.read_text(errors="replace").splitlines()[-15:] if LOGFILE.exists() else []
+        print("\n".join(tail), file=sys.stderr)
+        print(f"PostgreSQL did not start; full log: {LOGFILE}", file=sys.stderr)
+        sys.exit(1)
+
+
+def url(port: int, database: str, *, driver: str = "postgresql") -> str:
+    return f"{driver}://{USER}:@{HOST}:{port}/{database}"
+
+
+def ensure_databases(port: int) -> None:
+    """Create the app and test databases if they don't exist yet."""
+    with psycopg.connect(url(port, "postgres"), autocommit=True) as conn:
+        for name in (APP_DB, TEST_DB):
             exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
             if exists.fetchone() is None:
                 # Identifiers can't be parameters; names are fixed constants here.
@@ -67,36 +121,32 @@ def ensure_databases(uri: str, names: tuple[str, ...]) -> None:
 
 
 def main() -> int:
-    """Main entry point."""
-    pgdata = get_pgdata_path()
-
-    # Handle --stop flag
-    if len(sys.argv) > 1 and sys.argv[1] == "--stop":
-        try:
-            server = pgserver.get_server(str(pgdata), cleanup_mode=None)
-            server.stop()
-            print(f"PostgreSQL server stopped (data in {pgdata} persists)")
+    if sys.argv[1:] == ["--stop"]:
+        if running_port() is None:
+            print("PostgreSQL is not running.")
             return 0
-        except Exception as e:
-            print(f"Error stopping server: {e}", file=sys.stderr)
-            return 1
+        _pg_ctl("-m", "fast", "-w", "stop")
+        print(f"PostgreSQL stopped (data in {PGDATA} persists).")
+        return 0
 
-    # Start or reuse the server
-    try:
-        pgdata.parent.mkdir(parents=True, exist_ok=True)
-        server = pgserver.get_server(str(pgdata), cleanup_mode=None)
-        db_url = server.get_uri()
-    except Exception as e:
-        print(f"Error starting PostgreSQL server: {e}", file=sys.stderr)
-        return 1
+    if not (PGDATA / "PG_VERSION").exists():
+        initialize()
 
-    ensure_databases(db_url, (APP_DB, TEST_DB))
+    port = running_port()
+    if port is None:
+        start()
+        port = PORT
+    elif port != PORT:
+        print(
+            f"Note: server already running on port {port}; "
+            f"it will use {PORT} after `--stop` and a fresh start.",
+            file=sys.stderr,
+        )
 
-    print(f"FINAGENT_DATABASE_URL={with_database(db_url, APP_DB, driver=SQLALCHEMY_DRIVER)}")
-    print(
-        f"FINAGENT_DATABASE_URL={with_database(db_url, TEST_DB, driver=SQLALCHEMY_DRIVER)}"
-        "  # for pytest"
-    )
+    ensure_databases(port)
+    driver = "postgresql+psycopg"
+    print(f"FINAGENT_DATABASE_URL={url(port, APP_DB, driver=driver)}")
+    print(f"FINAGENT_DATABASE_URL={url(port, TEST_DB, driver=driver)}  # for pytest")
     return 0
 
 
